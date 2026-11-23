@@ -1,0 +1,7 @@
+# local only — not part of the app
+.claude/
+Start Money Manager.bat
+*.log
+Thumbs.db
+desktop.ini
+.DS_Store

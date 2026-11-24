@@ -586,10 +586,10 @@ const Model = {
     return series.end.map((v, i) => { cum += this.wishCost(w, w.month, series.months[i]); return r2(v + cum); });
   },
   /** does w fit if bought in month `start`? base = balances without w */
-  wishFit(w, start, base, months) {
+  wishFit(w, start, base, months, keep) {
     const i0 = months.indexOf(start);
     if (i0 < 0) return null;
-    const cushion = Store.data.settings.cushion || 0;
+    const cushion = keep ?? (Store.data.settings.cushion || 0);
     let cum = 0, worst = Infinity, worstM = null;
     for (let i = i0; i < months.length; i++) {
       cum += this.wishCost(w, start, months[i]);
@@ -598,8 +598,8 @@ const Model = {
     }
     return { ok: worst >= cushion, worst, worstM };
   },
-  wishBest(w, base, months) {
-    for (const m of months) { const f = this.wishFit(w, m, base, months); if (f && f.ok) return m; }
+  wishBest(w, base, months, keep) {
+    for (const m of months) { const f = this.wishFit(w, m, base, months, keep); if (f && f.ok) return m; }
     return null;
   },
 
@@ -692,7 +692,7 @@ function render(soft = false) {
   const ae = document.activeElement;
   if (soft && ae && $('#view').contains(ae) && /^(INPUT|SELECT|TEXTAREA)$/.test(ae.tagName)) { pendingRender = true; return; }
   pendingRender = false;
-  const views = { month: viewMonth, plan: viewPlan, goals: viewGoals, forecast: viewForecast, settings: viewSettings };
+  const views = { month: viewMonth, plan: viewPlan, goals: viewGoals, helper: () => viewHelper(), forecast: viewForecast, settings: viewSettings };
   $('#view').innerHTML = (views[UI.tab] || viewMonth)();
   $('#view').dataset.tab = UI.tab;
   document.body.dataset.tab = UI.tab;
@@ -1584,7 +1584,7 @@ function goalModal(src) {
   const isNew = !src.id;
   const cur = ym();
   const g = isNew
-    ? { id: uid(), name: '', emoji: '', target: '', initial: 0, start: cur, deadline: '', monthly: '', put: {}, paid: {}, done: false }
+    ? { id: uid(), name: '', emoji: '', target: '', initial: 0, start: cur, deadline: '', monthly: '', put: {}, paid: {}, done: false, ...(src.prefill || {}) }
     : structuredClone(src);
   const body = `
     <div class="two emoji-row">

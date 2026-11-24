@@ -22,6 +22,11 @@ your data lives on your devices, and can optionally be synced through your own p
   The app checks whether it fits your plan and shows the earliest month it fits (green/red month buttons).
   Plan it for a month and it's included in that month's numbers; tap **Bought it** when you buy it.
   "Always keep at least" sets a cushion the app won't plan below.
+- **Helper** tab — a budget coach that works only with your own numbers, on your device (rules of thumb, not
+  financial advice): a money check-up score, a needs / wants / savings plan (50/30/20, adjusted when essentials are
+  high) with one-tap budget suggestions, an emergency-fund goal and saving ahead for yearly bills, a subscriptions
+  check (cost per year, price increases, overlapping services, cancel button), a buying plan for your wishlist that
+  keeps a safety buffer, and tips from your spending history.
 - **Colour line** in the month summary — how this month's income is split into fixed costs, credits, budgets,
   savings, other spending and what's left. Hover or tap a part or a category to see what's in it.
 - **Arrange the Month view your way** — every card (Summary, Budgets, Income, Fixed costs, Payment calendar, …) can
@@ -135,6 +140,7 @@ When the token expires, create a new one and connect again (Settings → Disconn
 | `app.js` | Data model, budget calculations, all screens and forms |
 | `sync.js` | GitHub Gist sync, merging, encryption |
 | `import.js` | Bank CSV import |
+| `helper.js` | Helper tab (budget coach) |
 | `styles.css` | Look & feel (follows light/dark mode of your device) |
 | `sw.js` | Makes the app work offline |
 | `manifest.webmanifest`, `icons/` | Makes it installable |

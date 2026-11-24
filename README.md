@@ -15,6 +15,10 @@ your data lives on your devices, and can optionally be synced through your own p
 - **Budgets** — plan e.g. €350 for food, add what you actually spend, and see what's left
   (or how much you're over) plus a per-day amount for the rest of the month.
   Turn on **Carry over** for a budget and unused money moves to next month (overspending is taken off next month).
+  Each budget can run **1st to end of month**, **payday to payday** (uses the day your salary comes in) or **from a
+  chosen day**. Spending then counts in the period its date falls in; the card shows the dates (e.g. "Oct 25 – Nov 24").
+  A period belongs to the month it covers most of, so with salary on the 25th, Oct 25 – Nov 24 is November's budget;
+  when it's over, the Month view points you to the next month where the new period is.
 - **Savings goals** (Goals tab) — "Holiday €1,200 by June": the app works out the monthly amount, counts it in
   every month's plan, and tells you if you're falling behind. Put less/more aside in a single month by tapping it
   in the Month view.

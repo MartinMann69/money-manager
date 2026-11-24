@@ -216,6 +216,9 @@ main { max-width: 1240px; margin: 0 auto; padding: 4px 16px 72px; }
 .budget:hover { border-color: var(--accent); }
 .b-top, .b-bottom { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
 .b-top .amt .muted { font-weight: 500; }
+.b-period { display: block; font-size: 12px; font-weight: 500; color: var(--muted); margin-top: 1px; }
+.budget.off-period { opacity: .7; }
+.period-hint { margin: 0 0 8px; }
 .b-bottom { font-size: 13px; margin-top: 2px; }
 .bar { height: 8px; border-radius: 99px; background: var(--field); overflow: hidden; margin: 8px 0 6px; }
 .bar i { display: block; height: 100%; border-radius: 99px; background: var(--c-left); transition: width .3s; }

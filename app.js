@@ -36,6 +36,11 @@ function addDays(date, n) {
   return `${ym(x)}-${pad(x.getDate())}`;
 }
 function daysInMonth(m) { const [y, mo] = m.split('-').map(Number); return new Date(y, mo, 0).getDate(); }
+/** whole days from date a to date b (YYYY-MM-DD) */
+function daysBetween(a, b) {
+  const [ay, am, ad] = a.split('-').map(Number), [by, bm, bd] = b.split('-').map(Number);
+  return Math.round((Date.UTC(by, bm - 1, bd) - Date.UTC(ay, am - 1, ad)) / 864e5);
+}
 
 /** Accepts "12.5", "12,50", "1.234,56", "1,234.56", "€ 12" */
 function parseAmount(v) {
@@ -234,33 +239,117 @@ const Model = {
   _idx: null,
   idx() {
     if (this._idx && this._idx.rev === Store.rev && this._idx.cur === ym()) return this._idx;
-    const spent = new Map(), byMonth = new Map();
+    this._idx = { rev: Store.rev, cur: ym(), sums: new Map(), periods: new Map(), paydays: new Map() };
+    // spending in a budget counts in the budget period its date falls in (for month budgets: the month it's paid in)
+    const spent = new Map(), byMonth = new Map(), btx = new Map(), inBudget = new Set();
+    const budgets = new Map(Store.live('budgets').map(b => [b.id, b]));
     for (const tx of Store.live('txs')) {
       if (!byMonth.has(tx.month)) byMonth.set(tx.month, []);
       byMonth.get(tx.month).push(tx);
-      if (tx.kind !== 'income' && tx.budgetId) {
-        const k = `${tx.budgetId}|${tx.month}`;
-        spent.set(k, r2((spent.get(k) || 0) + tx.amount));
-      }
+      const b = tx.kind !== 'income' && tx.budgetId && budgets.get(tx.budgetId);
+      if (!b) continue;
+      const bm = this.budgetMonthOf(b, tx);
+      if (!this.isActive(b, bm)) continue; // budget not running then: shows under "Other spending"
+      const k = `${b.id}|${bm}`;
+      spent.set(k, r2((spent.get(k) || 0) + tx.amount));
+      if (!btx.has(k)) btx.set(k, []);
+      btx.get(k).push(tx);
+      inBudget.add(tx.id);
     }
-    this._idx = { rev: Store.rev, cur: ym(), spent, byMonth, sums: new Map() };
+    Object.assign(this._idx, { spent, byMonth, btx, inBudget });
     return this._idx;
   },
   budgetSpent(id, m) { return this.idx().spent.get(`${id}|${m}`) || 0; },
 
+  /* ---- budget periods: 1st to end of month, payday to payday, or from a chosen day ---- */
+  /** date of the main payday in month m (straight from the income items, no summary needed) */
+  paydayDate(m) {
+    const cache = this.idx().paydays;
+    if (cache.has(m)) return cache.get(m);
+    let best = null, bestAmt = -1;
+    for (const it of Store.live('items')) {
+      if (it.kind !== 'income' || !it.day || !this.isActive(it, m) || this.isSkipped(it, m)) continue;
+      const a = this.amountFor(it, m) || 0;
+      if (a > bestAmt) { bestAmt = a; best = `${m}-${pad(this.dayOf(it, m))}`; }
+    }
+    cache.set(m, best);
+    return best;
+  },
+  /** start day of b's period in month m (1 = normal calendar month) */
+  budgetStartDay(b, m) {
+    if (b.period === 'pay') { const p = this.paydayDate(m); return p ? +p.slice(8) : 1; }
+    const n = parseInt(b.period, 10);
+    return n > 1 ? Math.min(n, daysInMonth(m)) : 1;
+  },
+  /** dates of the budget period that belongs to month m. A period belongs to the month it covers most of:
+      starting on the 25th → Oct 25 – Nov 24 is November's; starting on the 10th → Nov 10 – Dec 9 is November's */
+  budgetPeriod(b, m) {
+    const key = `${b.period || ''}|${m}`, cache = this.idx().periods;
+    if (cache.has(key)) return cache.get(key);
+    let res;
+    const d = this.budgetStartDay(b, m);
+    if (d === 1 && (!b.period || b.period === 'month' || b.period === 'pay' && !this.paydayDate(m))) {
+      res = { from: `${m}-01`, to: `${m}-${pad(daysInMonth(m))}`, custom: false };
+    } else {
+      const startIn = d > 15 ? addMonths(m, -1) : m, next = addMonths(startIn, 1);
+      res = { from: `${startIn}-${pad(this.budgetStartDay(b, startIn))}`, to: addDays(`${next}-${pad(this.budgetStartDay(b, next))}`, -1), custom: true };
+    }
+    cache.set(key, res);
+    return res;
+  },
+  /** month whose budget period a spending entry belongs to */
+  budgetMonthOf(b, tx) {
+    if (!b.period || b.period === 'month') return tx.month;
+    // bought now, paid later: move the date along to the month it's paid in
+    const date = tx.month === tx.date.slice(0, 7) ? tx.date : `${tx.month}-${pad(Math.min(+tx.date.slice(8), daysInMonth(tx.month)))}`;
+    const m0 = date.slice(0, 7);
+    for (const k of [m0, addMonths(m0, 1), addMonths(m0, -1)]) {
+      const p = this.budgetPeriod(b, k);
+      if (p.from <= date && date <= p.to) return k;
+    }
+    return m0;
+  },
+  /** 'past' (period over), 'now' or 'future' */
+  periodStatus(p) { const t = today(); return p.to < t ? 'past' : p.from > t ? 'future' : 'now'; },
+
   /** money carried into month m from earlier months (only for budgets with carry-over on) */
   budgetCarry(b, m) {
     if (!b.rollover) return 0;
-    const cur = ym();
     let carry = 0;
     for (let k = b.start; k < m; k = addMonths(k, 1)) {
       if (!this.isActive(b, k)) continue;
       const avail = r2((this.amountFor(b, k) || 0) + carry);
-      if (k < cur) carry = r2(avail - this.budgetSpent(b.id, k));           // what was really left
-      else if (k === cur) carry = Math.min(0, r2(avail - this.budgetSpent(b.id, k))); // overspending so far carries; leftover is still being spent
-      else carry = Math.min(0, avail);                                       // future: assume the plan gets used
+      const st = this.periodStatus(this.budgetPeriod(b, k));
+      if (st === 'past') carry = r2(avail - this.budgetSpent(b.id, k));             // what was really left
+      else if (st === 'now') carry = Math.min(0, r2(avail - this.budgetSpent(b.id, k))); // overspending so far carries; leftover is still being spent
+      else carry = Math.min(0, avail);                                               // future: assume the plan gets used
     }
     return carry;
+  },
+  /** budget money not spent yet, spread over the remaining days of each budget's period —
+      per day of calendar month m (index = day). Today's spending is assumed to be entered already. */
+  budgetSpread(m) {
+    const cache = this.idx().sums, key = `spread|${m}`;
+    if (cache.has(key)) return cache.get(key);
+    const dim = daysInMonth(m), days = new Array(dim + 2).fill(0);
+    const tomorrow = addDays(today(), 1), first = `${m}-01`, last = `${m}-${pad(dim)}`;
+    let total = 0;
+    for (const k of [addMonths(m, -1), m, addMonths(m, 1)]) {
+      for (const row of this.summarize(k).budgets) {
+        const left = Math.max(0, row.available - row.spent);
+        if (!left || row.to < first || row.from > last) continue;
+        const from = row.from > tomorrow ? row.from : tomorrow;
+        if (from > row.to || from > last) continue;
+        const per = left / (daysBetween(from, row.to) + 1);
+        for (let d = Math.max(1, from <= first ? 1 : +from.slice(8)); d <= dim; d++) {
+          if (`${m}-${pad(d)}` > row.to) break;
+          days[d] += per; total += per;
+        }
+      }
+    }
+    const res = { days, total: r2(total) };
+    cache.set(key, res);
+    return res;
   },
 
   /* ---- savings goals ---- */
@@ -329,19 +418,15 @@ const Model = {
     for (const r of S.wishes) add(this.wishDay(r.w, m), r.w.name, -r.amount, 'wish', { id: r.w.id, action: 'edit-wish' });
     // everyday spending (budgets + other) by its date — counted, but not listed one by one
     const daily = new Array(dim + 2).fill(0);
-    for (const b of S.budgets) for (const tx of b.txs) daily[txDay(tx)] -= tx.amount;
-    for (const tx of S.other) daily[txDay(tx)] -= tx.amount;
-    // budget money not spent yet is spread over the remaining days
-    const rem = S.past ? 0 : S.t.budgetLeft;
-    const firstSpread = m === cur ? todayD + 1 : 1;
-    const spreadDays = Math.max(0, dim - firstSpread + 1);
-    const perDay = spreadDays ? rem / spreadDays : 0;
+    for (const tx of this.idx().byMonth.get(m) || []) if (tx.kind !== 'income') daily[txDay(tx)] -= tx.amount;
+    // budget money not spent yet is spread over the remaining days of each budget period
+    const SP = this.budgetSpread(m), rem = SP.total;
 
     // start = money on the account on the 1st: entered savings/balance + leftovers since then
     const acct = this.accountStart(m);
     const known = acct !== null;
     const start = known ? acct : this.carryIn(m);
-    let bal = start, low = Infinity, lowDay = null, now = null, spread = 0;
+    let bal = start, low = Infinity, lowDay = null, now = null;
     const dayBal = [];
     // something ticked as paid/received before its day already happened: count it today
     for (const e of ev) e.eff = m === cur && e.paid && e.day && e.day > todayD ? todayD : (e.day || 1);
@@ -349,12 +434,12 @@ const Model = {
       for (const e of ev) if (e.eff === d && e.amount > 0) bal += e.amount;   // money in first (usually arrives early in the day)
       for (const e of ev) if (e.eff === d && e.amount < 0) bal += e.amount;
       bal += daily[d];
-      if (d >= firstSpread) { const s = d === dim ? r2(rem - spread) : r2(perDay); spread = r2(spread + s); bal -= s; }
+      bal -= SP.days[d];
       bal = r2(bal);
       dayBal[d] = bal;
       if (d >= Math.max(1, todayD) && bal < low) { low = bal; lowDay = d; }
     }
-    if (!spreadDays && todayD === dim && lowDay === null) { low = bal; lowDay = dim; }
+    if (todayD === dim && lowDay === null) { low = bal; lowDay = dim; }
     ev.sort((a, b) => (a.day || 0) - (b.day || 0) || b.amount - a.amount);
     ev.forEach(e => { e.balance = dayBal[e.eff]; });
     const nextIncome = d => ev.find(e => e.amount > 0 && (e.day || 1) > d);
@@ -498,14 +583,17 @@ const Model = {
       }
     }
     const wishTotal = r2(wishes.reduce((s, w) => s + w.amount, 0));
-    // budget money (food etc.) still planned until then
+    // budget money (food etc.) still planned until then: what's left in each budget period,
+    // for the part of the period (from today) that falls before payday
     let budgets = 0;
     const todayD = new Date().getDate();
-    for (let m = cur; m <= until.slice(0, 7); m = addMonths(m, 1)) {
-      const S = this.summarize(m), dim = daysInMonth(m);
-      const endD = m === until.slice(0, 7) ? +until.slice(8) : dim;
-      if (m === cur) budgets += S.t.budgetLeft * Math.max(0, endD - todayD + 1) / (dim - todayD + 1);
-      else budgets += S.t.planned * endD / dim;
+    for (let m = addMonths(cur, -1); m <= addMonths(until.slice(0, 7), 1); m = addMonths(m, 1)) {
+      for (const row of this.summarize(m).budgets) {
+        const left = Math.max(0, row.available - row.spent);
+        const from = row.from > t0 ? row.from : t0, to = row.to < until ? row.to : until;
+        if (!left || row.status === 'past' || from > to) continue;
+        budgets += left * (daysBetween(from, to) + 1) / (daysBetween(from, row.to) + 1);
+      }
     }
     budgets = r2(budgets);
     const cushion = r2(Store.data.settings.cushion || 0);
@@ -629,23 +717,22 @@ const Model = {
       };
       (it.kind === 'income' ? S.income : S.fixed).push(row);
     }
-    const bmap = new Map();
+    const I = this.idx();
     for (const b of Store.live('budgets')) {
       if (!this.isActive(b, m)) continue;
       const planned = this.amountFor(b, m) || 0, carry = this.budgetCarry(b, m);
-      bmap.set(b.id, { b, planned, carry, available: r2(planned + carry), changed: this.hasOverride(b, m), spent: 0, txs: [] });
+      const p = this.budgetPeriod(b, m), txs = [...(I.btx.get(`${b.id}|${m}`) || [])];
+      S.budgets.push({ b, planned, carry, available: r2(planned + carry), changed: this.hasOverride(b, m),
+        spent: r2(txs.reduce((s, tx) => s + tx.amount, 0)), txs, from: p.from, to: p.to, custom: p.custom, status: this.periodStatus(p) });
     }
-    for (const tx of this.idx().byMonth.get(m) || []) {
-      if (tx.kind === 'income') { S.income.push({ tx, amount: tx.amount }); continue; }
-      const bb = tx.budgetId && bmap.get(tx.budgetId);
-      if (bb) { bb.spent = r2(bb.spent + tx.amount); bb.txs.push(tx); }
-      else S.other.push(tx);
+    for (const tx of I.byMonth.get(m) || []) {
+      if (tx.kind === 'income') S.income.push({ tx, amount: tx.amount });
+      else if (!I.inBudget.has(tx.id)) S.other.push(tx);
     }
     // order by the day money comes in / goes out (no day = at the end)
     const dayKey = x => (x.it ? this.dayOf(x.it, m) : x.tx ? +x.tx.date.slice(8) : null) || 99;
     S.income.sort((a, b) => dayKey(a) - dayKey(b));
     S.fixed.sort((a, b) => dayKey(a) - dayKey(b));
-    S.budgets = [...bmap.values()];
     S.budgets.forEach(b => b.txs.sort((a, c) => (a.date < c.date ? 1 : -1)));
     S.other.sort((a, c) => (a.date < c.date ? 1 : -1));
     for (const c of Store.live('credits')) {
@@ -670,9 +757,9 @@ const Model = {
     t.credits = sum(S.credits, x => x.amount);
     t.planned = sum(S.budgets, x => x.available);
     t.spent = sum(S.budgets, x => x.spent);
-    // past months: what was actually spent. current/future: plan, or more if already over plan
-    t.budgets = S.past ? t.spent : sum(S.budgets, x => Math.max(x.available, x.spent, 0));
-    t.budgetLeft = sum(S.budgets, x => Math.max(0, x.available - x.spent));
+    // periods that are over: what was actually spent. running/coming ones: plan, or more if already over plan
+    t.budgets = sum(S.budgets, x => (x.status === 'past' ? x.spent : Math.max(x.available, x.spent, 0)));
+    t.budgetLeft = sum(S.budgets, x => (x.status === 'past' ? 0 : Math.max(0, x.available - x.spent)));
     t.budgetOver = sum(S.budgets, x => Math.max(0, x.spent - Math.max(0, x.available)));
     t.other = sum(S.other, x => x.amount);
     t.savings = sum(S.savings, x => x.amount);
@@ -1092,7 +1179,14 @@ function txRow(tx, showBudget = false) {
 
 function carryText(row) {
   if (!row.b.rollover || !row.carry) return '';
-  return row.carry > 0 ? `incl. ${money(row.carry)} from last month` : `${money(-row.carry)} less (overspent last month)`;
+  const last = row.custom ? 'last period' : 'last month';
+  return row.carry > 0 ? `incl. ${money(row.carry)} from ${last}` : `${money(-row.carry)} less (overspent ${last})`;
+}
+/** "Oct 25 – Nov 24" for budgets that don't run from the 1st, plus whether that period is over / still to come */
+function periodText(row, withStatus = true) {
+  if (!row.custom) return '';
+  const st = !withStatus ? '' : row.status === 'past' ? ' · over' : row.status === 'future' ? ` · starts ${whenText(daysUntil(row.from))}` : '';
+  return `${dateLabel(row.from)} – ${dateLabel(row.to)}${st}`;
 }
 function budgetCard(row, S) {
   const { b, available, spent } = row;
@@ -1100,19 +1194,20 @@ function budgetCard(row, S) {
   const pct = available > 0 ? Math.min(100, (spent / available) * 100) : (spent > 0 ? 100 : 0);
   const state = left < 0 ? 'over' : pct >= 85 ? 'warn' : 'ok';
   let perDay = '';
-  if (S.current && left > 0) {
-    const daysLeft = daysInMonth(S.m) - new Date().getDate() + 1;
+  if (row.status === 'now' && left > 0) {
+    const daysLeft = daysBetween(today(), row.to) + 1;
     perDay = ` · ≈ ${money(left / daysLeft)}/day`;
   }
   const carry = carryText(row);
-  return `<div class="budget" data-action="budget-open" data-id="${b.id}" role="button" tabindex="0">
+  const per = periodText(row);
+  return `<div class="budget ${row.custom && row.status !== 'now' ? 'off-period' : ''}" data-action="budget-open" data-id="${b.id}" role="button" tabindex="0">
     <div class="b-top">
-      <span class="name">${esc(b.emoji || '')} ${esc(b.name)}${b.rollover ? ' <span class="tag" title="Unused money carries over">↻</span>' : ''}</span>
+      <span class="name">${esc(b.emoji || '')} ${esc(b.name)}${b.rollover ? ' <span class="tag" title="Unused money carries over">↻</span>' : ''}${per ? `<small class="b-period">${esc(per)}</small>` : ''}</span>
       <span class="amt">${money(spent)} <span class="muted">/ ${money(available)}</span></span>
     </div>
     <div class="bar ${state}"><i style="width:${pct}%"></i></div>
     <div class="b-bottom">
-      <span class="${left < 0 ? 'neg' : 'muted'}">${left < 0 ? `${money(-left)} over budget` : `${money(left)} left${perDay}`}${carry ? `<br><small class="muted">${carry}</small>` : ''}</span>
+      <span class="${left < 0 ? 'neg' : 'muted'}">${left < 0 ? `${money(-left)} over budget` : row.custom && row.status === 'past' ? `${money(left)} not spent${b.rollover ? ' → added to the next period' : ''}` : `${money(left)} left${perDay}`}${carry ? `<br><small class="muted">${carry}</small>` : ''}</span>
       <button type="button" class="mini" data-action="add-expense" data-budget="${b.id}">+ Add</button>
     </div>
   </div>`;
@@ -1125,7 +1220,15 @@ function viewMonth() {
 
   const incomeBody = S.income.map(r => (r.it ? itemRow(r, 'income') : txRow(r.tx))).join('');
   const fixedBody = groupedBody(groupFixed(S.fixed, r => r.it, r => r.amount), r => itemRow(r, 'fixed'));
-  const budgetBody = S.budgets.length ? `<div class="budgets">${S.budgets.map(r => budgetCard(r, S)).join('')}</div>` : '';
+  // budgets that run e.g. payday to payday: the running period can belong to the month before/after
+  let periodHint = '';
+  if (S.current) {
+    const over = S.budgets.filter(r => r.custom && r.status === 'past'), early = S.budgets.filter(r => r.custom && r.status === 'future');
+    const names = rs => rs.map(r => esc(`${r.b.emoji || ''} ${r.b.name}`.trim())).join(', ');
+    if (over.length) periodHint += `<p class="hint period-hint">${names(over)}: this period is over. The new one (from ${esc(dateLabel(addDays(over[0].to, 1)))}) is in <a href="#" data-action="goto-month" data-m="${addMonths(S.m, 1)}">${esc(monthLabel(addMonths(S.m, 1)))} ›</a></p>`;
+    if (early.length) periodHint += `<p class="hint period-hint">${names(early)}: this period starts on ${esc(dateLabel(early[0].from))}. The one running now is in <a href="#" data-action="goto-month" data-m="${addMonths(S.m, -1)}">‹ ${esc(monthLabel(addMonths(S.m, -1)))}</a></p>`;
+  }
+  const budgetBody = S.budgets.length ? `${periodHint}<div class="budgets">${S.budgets.map(r => budgetCard(r, S)).join('')}</div>` : '';
   const creditBody = S.credits.map(({ c, index, amount, paid }) => {
     const after = Model.creditRemainingAfter(c, S.m);
     return `<div class="row ${paid ? 'is-paid' : ''}">
@@ -2233,7 +2336,8 @@ function txModal(src) {
       Object.assign(tx, { amount, name, date: fd.date, month, budgetId: income ? null : (fd.budgetId || null) });
       Store.put('txs', tx);
       doneWish();
-      toast(isNew ? (month !== UI.month ? `Added — counts in ${monthLabel(month)}` : 'Added') : 'Saved');
+      const bm = b && !income && b.period ? Model.budgetMonthOf(b, tx) : month;
+      toast(isNew ? (bm !== UI.month ? `Added — counts in ${b && b.period ? `the ${dateLabel(Model.budgetPeriod(b, bm).from)} – ${dateLabel(Model.budgetPeriod(b, bm).to)} period (${monthLabel(bm)})` : monthLabel(month)}` : 'Added') : 'Saved');
     },
   });
 }
@@ -2351,6 +2455,12 @@ function itemModal(src) {
 }
 
 /* ---------------- Budget ---------------- */
+/** stored form of the period choice: null (1st of month), 'pay', or the start day */
+function periodValue(kind, day) {
+  if (kind === 'pay') return 'pay';
+  const d = parseInt(day, 10);
+  return kind === 'day' && d >= 2 && d <= 31 ? d : null;
+}
 function budgetModal(src) {
   const isNew = !src.id;
   const cur = ym();
@@ -2367,7 +2477,12 @@ function budgetModal(src) {
     <div class="chips">${['🍔', '🛒', '🎉', '🚌', '⛽', '🛍️', '💊', '🐶', '🎁', '☕', '🎮', '✈️'].map(e => `<button type="button" class="chip" data-emoji="${e}">${e}</button>`).join('')}</div>
     <label class="field"><span>Planned per month</span><input name="amount" class="amount-input" inputmode="decimal" value="${orig}" placeholder="0.00"></label>
     ${isNew ? '' : `<p class="hint">A new amount applies from ${monthLabel(effFrom)} on. To change only one month, open the budget in the Month tab.</p>`}
-    <label class="toggle"><input type="checkbox" name="rollover" ${b.rollover ? 'checked' : ''}><span><b>Carry over</b> — money not spent this month is added to next month (and overspending is taken off next month).</span></label>
+    <fieldset class="field"><legend>Each budget period runs</legend>
+      ${segRadio('period', [['month', '1st to end of month'], ['pay', 'Payday to payday'], ['day', 'From day…']], b.period === 'pay' ? 'pay' : parseInt(b.period, 10) > 1 ? 'day' : 'month')}
+    </fieldset>
+    <label class="field period-day" ${parseInt(b.period, 10) > 1 ? '' : 'hidden'}><span>Starts on day (each month)</span><input name="periodDay" type="number" inputmode="numeric" min="2" max="31" value="${parseInt(b.period, 10) > 1 ? parseInt(b.period, 10) : 15}"></label>
+    <p class="hint period-preview"></p>
+    <label class="toggle"><input type="checkbox" name="rollover" ${b.rollover ? 'checked' : ''}><span><b>Carry over</b> — money not spent in one period is added to the next (and overspending is taken off the next).</span></label>
     <div class="two">
       <label class="field"><span>First month</span><input type="month" name="start" value="${b.start}" required></label>
       <label class="field"><span>Last month (optional)</span><input type="month" name="end" value="${b.end || ''}"></label>
@@ -2379,6 +2494,19 @@ function budgetModal(src) {
     onMount(form) {
       if (isNew) setTimeout(() => form.elements.name.focus(), 50);
       $$('.chip', form).forEach(c => (c.onclick = () => { form.elements.emoji.value = c.dataset.emoji; }));
+      // show which dates the period would cover this month
+      const updPeriod = () => {
+        const kind = form.querySelector('input[name=period]:checked').value;
+        $('.period-day', form).hidden = kind !== 'day';
+        const p = Model.budgetPeriod({ period: periodValue(kind, form.elements.periodDay.value) }, UI.month);
+        const noPay = kind === 'pay' && !Model.paydayDate(UI.month);
+        $('.period-preview', form).textContent = noPay
+          ? 'Set the day your salary comes in ("Comes in on day" on your income) — until then it runs from the 1st.'
+          : `${monthLabel(UI.month)}: ${fullDate(p.from)} – ${fullDate(p.to)}${p.custom ? '. A period belongs to the month it covers most of.' : ''}`;
+      };
+      form.addEventListener('input', updPeriod);
+      form.addEventListener('change', updPeriod);
+      updPeriod();
       $('[data-m=delete]', form)?.addEventListener('click', () => {
         if (confirm(`Delete budget "${b.name}"?\n\nSpending in it moves to "Other spending". To stop it from a certain month instead, set a "Last month".`)) {
           Store.del('budgets', b.id); closeModal(); toast('Deleted');
@@ -2391,7 +2519,8 @@ function budgetModal(src) {
       if (isNaN(amount) || amount < 0) return formError(form, 'Please enter a valid amount.');
       if (!isMonth(fd.start)) return formError(form, 'Please choose the first month.');
       if (fd.end && (!isMonth(fd.end) || fd.end < fd.start)) return formError(form, 'Last month looks wrong.');
-      Object.assign(b, { name: fd.name.trim(), emoji: fd.emoji.trim(), start: fd.start, end: fd.end || null, rollover: !!fd.rollover });
+      if (fd.period === 'day' && !(+fd.periodDay >= 2 && +fd.periodDay <= 31)) return formError(form, 'Start day must be between 2 and 31.');
+      Object.assign(b, { name: fd.name.trim(), emoji: fd.emoji.trim(), start: fd.start, end: fd.end || null, rollover: !!fd.rollover, period: periodValue(fd.period, fd.periodDay) });
       if (isNew) b.amounts = [{ from: b.start, amount }];
       else if (amount !== orig) Model.setAmountFrom(b, effFrom, amount);
       Store.put('budgets', b);
@@ -2414,6 +2543,7 @@ function budgetMonthModal(id) {
       <div class="bar ${left < 0 ? 'over' : pct >= 85 ? 'warn' : 'ok'}"><i style="width:${pct}%"></i></div>
       <div class="${left < 0 ? 'neg' : 'pos'}">${left < 0 ? `${money(-left)} over budget` : `${money(left)} left`}</div>
       ${carry ? `<div class="muted small">Planned ${money(planned)}, ${carry}</div>` : ''}
+      ${row.custom ? `<div class="muted small">Period: ${esc(periodText(row))}</div>` : ''}
     </div>
     <button type="button" class="btn block" data-action="add-expense" data-budget="${b.id}">+ Add spending</button>
     <div class="list">${txs.length ? txs.map(tx => txRow(tx)).join('') : '<p class="empty">No spending in this budget yet.</p>'}</div>

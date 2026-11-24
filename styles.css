@@ -593,6 +593,9 @@ dialog.wide { width: min(860px, calc(100% - 24px)); }
 
 .field { display: block; margin: 0 0 14px; border: 0; padding: 0; min-width: 0; }
 .field > span, .field > legend { display: block; font-size: 13px; color: var(--muted); margin-bottom: 6px; font-weight: 600; padding: 0; }
+.repeat-field .rf-noday { margin: 10px 0 0; font-size: 13px; color: var(--muted); }
+.repeat-field .rf-hint { margin-top: 8px; }
+.repeat-field .rf-hint:empty { display: none; }
 input, select, textarea {
   width: 100%; font: inherit; font-size: 16px; color: var(--text); background: var(--field);
   border: 1px solid var(--line); border-radius: 12px; padding: 11px 12px; outline: none; min-height: 46px;

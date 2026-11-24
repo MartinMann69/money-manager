@@ -956,10 +956,46 @@ function syncStatusText() {
 }
 
 /* ---------------- Day of the month ---------------- */
-function dayField(value, label) {
-  return `<label class="field"><span class="day-label">${label}</span><input name="day" type="number" inputmode="numeric" min="1" max="31" value="${value || ''}" placeholder="e.g. 1 (optional)"></label>`;
-}
 function readDay(v) { const d = parseInt(v, 10); return d >= 1 && d <= 31 ? d : null; }
+
+/* ---------------- Pick one date that repeats ---------------- */
+/** date in month m on day `day` (cut short in short months) */
+const firstDate = (m, day) => `${m}-${pad(Math.min(day || 1, daysInMonth(m)))}`;
+/** suggested day for something new starting in month m: today in this month, else the 1st */
+const newDay = m => (m === ym() ? +today().slice(8) : 1);
+/** one calendar date instead of "month" + "day": the picked date sets the first month and the day each time.
+    opts.noDay: label of a "no fixed day" checkbox; opts.optional: may stay empty */
+function repeatField(name, label, m, day, opts = {}) {
+  const v = opts.value || (m ? firstDate(m, day) : '');
+  return `<div class="field repeat-field" data-name="${name}">
+    <label class="field-label" for="rf-${name}"><span class="rf-label">${label}</span></label>
+    <input type="date" id="rf-${name}" name="${name}" value="${v}" data-orig="${v}" data-day="${day || ''}" ${opts.optional ? '' : 'required'}>
+    ${opts.noDay ? `<label class="toggle rf-noday"><input type="checkbox" name="${name}NoDay" ${m && !day ? 'checked' : ''}><span>${opts.noDay}</span></label>` : ''}
+    <p class="hint rf-hint"></p>
+  </div>`;
+}
+/** what a repeatField says: { date, m, day } (day null = no fixed day); an unchanged date keeps its old day,
+    so e.g. "every 31st" shown as Feb 28 stays the 31st */
+function readRepeat(form, name) {
+  const inp = form.elements[name], v = inp && inp.value;
+  if (!isDate(v)) return null;
+  const noDay = form.elements[`${name}NoDay`]?.checked;
+  const day = noDay ? null : v === inp.dataset.orig && inp.dataset.day ? +inp.dataset.day : +v.slice(8);
+  return { date: v, m: v.slice(0, 7), day };
+}
+/** "Every month on day 15: 15 Mar, 15 Apr, 15 May …" under a repeatField */
+function repeatHint(form, name, every = 1, count = 0) {
+  const p = $(`.repeat-field[data-name=${name}] .rf-hint`, form);
+  if (!p) return;
+  const r = readRepeat(form, name);
+  if (!r) { p.textContent = ''; return; }
+  if (count === 1) { p.textContent = r.day ? `Once, on ${fullDate(firstDate(r.m, r.day))}.` : `Once, in ${monthLabel(r.m)}.`; return; }
+  const ev = every === 1 ? 'Every month' : every === 12 ? 'Every year' : `Every ${every} months`;
+  if (!r.day) { p.textContent = `${ev} from ${monthLabel(r.m)}, no fixed day — it counts once you tick it.`; return; }
+  const n = count ? Math.min(3, count) : 3;
+  const ds = Array.from({ length: n }, (_, i) => dateLabel(firstDate(addMonths(r.m, i * every), r.day)));
+  p.textContent = `${ev} on day ${r.day}${r.day > 28 ? ' (or the last day of shorter months)' : ''}: ${ds.join(', ')}${!count || count > n ? ' …' : ''}`;
+}
 const dayDate = (m, d) => dateLabel(`${m}-${pad(Math.min(d, daysInMonth(m)))}`);
 
 /* ---------------- Fixed-cost groups ---------------- */
@@ -1575,7 +1611,7 @@ function needCard(S) {
   const P = Model.payCycle(S.m);
   if (!P) {
     if (!S.income.some(r => r.it)) return '';
-    return section('Needed until payday', '', `<p class="empty">Set the day your salary comes in (tap it under Income → "Comes in on day") and the day your bills are taken. The app then shows how much has to be on your account so every bill can be paid before the next salary arrives.</p>`, '', '', 'month-need', 'set the day your salary comes in');
+    return section('Needed until payday', '', `<p class="empty">Set the day your salary comes in (tap it under Income → "First comes in on") and the day your bills are taken. The app then shows how much has to be on your account so every bill can be paid before the next salary arrives.</p>`, '', '', 'month-need', 'set the day your salary comes in');
   }
   const t = today();
   const keep = r2(P.total + P.spend);
@@ -1825,17 +1861,14 @@ function goalModal(src) {
       <label class="field"><span>Target amount</span><input name="target" inputmode="decimal" value="${g.target}" placeholder="0.00"></label>
       <label class="field"><span>Already saved</span><input name="initial" inputmode="decimal" value="${g.initial || 0}"></label>
     </div>
-    <div class="two">
-      <label class="field"><span>Start saving on</span><input type="date" name="startDate" value="${g.startDate || (isNew ? today() : `${g.start}-01`)}"></label>
-      <label class="field"><span>Reach it by (optional)</span><input type="date" name="deadline" value="${goalDeadlineDate(g) || ''}"></label>
-    </div>
     <fieldset class="field"><legend>How do you save?</legend>
       ${segRadio('mode', [['auto', 'Same amount every month'], ['manual', 'I add money myself']], g.mode === 'manual' ? 'manual' : 'auto')}
     </fieldset>
-    <div class="two auto-only">
-      <label class="field"><span>Put aside per month</span><input name="monthly" inputmode="decimal" value="${g.monthly}" placeholder="from the date"></label>
-      ${dayField(g.day, 'Put aside on day')}
-    </div>
+    ${repeatField('startDate', g.mode === 'manual' ? 'Start saving on' : 'First put aside on', g.start, isNew ? newDay(cur) : g.day, {
+      value: isNew ? today() : g.mode !== 'manual' && g.day ? firstDate(g.start, g.day) : g.startDate || `${g.start}-01`,
+      noDay: 'No fixed day — it counts once I tick it' })}
+    <label class="field"><span>Reach it by (optional)</span><input type="date" name="deadline" value="${goalDeadlineDate(g) || ''}"></label>
+    <label class="field auto-only"><span>Put aside per month</span><input name="monthly" inputmode="decimal" value="${g.monthly}" placeholder="from the date"></label>
     <p class="hint preview"></p>
     <p class="form-error"></p>`;
   openModal(isNew ? 'New savings goal' : 'Edit savings goal', body, {
@@ -1849,7 +1882,12 @@ function goalModal(src) {
       const recalc = fromMonthly => {
         if (fromMonthly) manual = true;
         const target = parseAmount(el.target.value), initial = parseAmount(el.initial.value) || 0;
-        const day = readDay(el.day.value);
+        const manualMode = form.querySelector('input[name=mode]:checked').value === 'manual';
+        $('.rf-label', form).textContent = manualMode ? 'Start saving on' : 'First put aside on';
+        $('.rf-noday', form).hidden = manualMode;
+        if (manualMode) $('.rf-hint', form).textContent = '';
+        else repeatHint(form, 'startDate', 1);
+        const day = manualMode ? null : readRepeat(form, 'startDate')?.day || null;
         const sd = el.startDate.value, dl = el.deadline.value;
         const first = isDate(sd) ? goalFirstMonth(sd, day) : null;
         const last = isDate(dl) ? goalLastMonth(dl, day) : null;
@@ -1859,7 +1897,6 @@ function goalModal(src) {
         }
         const monthly = parseAmount(el.monthly.value);
         const p = $('.preview', form);
-        const manualMode = form.querySelector('input[name=mode]:checked').value === 'manual';
         $('.auto-only', form).hidden = manualMode;
         if (manualMode) {
           // no fixed amount: show the pace needed to make the date
@@ -1882,7 +1919,8 @@ function goalModal(src) {
         } else p.textContent = '';
       };
       el.monthly.addEventListener('input', () => recalc(true));
-      ['target', 'initial', 'startDate', 'day'].forEach(n => el[n].addEventListener('input', () => recalc(false)));
+      ['target', 'initial', 'startDate'].forEach(n => el[n].addEventListener('input', () => recalc(false)));
+      el.startDateNoDay.addEventListener('change', () => recalc(false));
       form.querySelectorAll('input[name=mode]').forEach(r => r.addEventListener('change', () => recalc(false)));
       el.deadline.addEventListener('input', () => { manual = false; recalc(false); });
       recalc(false);
@@ -1902,7 +1940,7 @@ function goalModal(src) {
       if (fd.deadline && (!isDate(fd.deadline) || fd.deadline < fd.startDate)) return formError(form, 'The "reach it by" date is before the start.');
       const manualMode = fd.mode === 'manual';
       if (!manualMode && monthly <= 0 && initial < target) return formError(form, 'Please enter how much to put aside per month.');
-      const day = manualMode ? g.day || null : readDay(fd.day);
+      const day = manualMode ? g.day || null : readRepeat(form, 'startDate').day;
       if (!isNew && manualMode !== (g.mode === 'manual')) switchGoalMode(g, manualMode);
       Object.assign(g, {
         name: fd.name.trim(), emoji: fd.emoji.trim(), target, initial, monthly: manualMode ? (g.monthly || 0) : monthly, day,
@@ -2578,14 +2616,10 @@ function itemModal(src) {
     </div>
     <label class="field"><span>Amount</span><input name="amount" class="amount-input" inputmode="decimal" value="${orig}" placeholder="0.00"></label>
     ${isNew ? '' : `<p class="hint">A new amount applies from ${monthLabel(effFrom)} on — earlier months keep the old amount. To change only one month, tap it in the Month tab.</p>`}
-    <div class="two">
-      <label class="field"><span>How often</span><select name="every">${Object.entries(EVERY).map(([v, l]) => `<option value="${v}" ${+v === (it.every || 1) ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
-      ${dayField(it.day, it.kind === 'income' ? 'Comes in on day' : 'Taken on day')}
-    </div>
-    <div class="two">
-      <label class="field"><span>First month</span><input type="month" name="start" value="${it.start}" required></label>
-      <label class="field"><span>Last month (optional)</span><input type="month" name="end" value="${it.end || ''}"></label>
-    </div>
+    <label class="field"><span>How often</span><select name="every">${Object.entries(EVERY).map(([v, l]) => `<option value="${v}" ${+v === (it.every || 1) ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
+    ${repeatField('first', it.kind === 'income' ? 'First comes in on' : 'First taken on', it.start, isNew ? newDay(it.start) : it.day,
+      { noDay: 'The day changes — count it once I tick it' })}
+    <label class="field"><span>Last time on (optional)</span><input type="date" name="endDate" value="${it.end ? firstDate(it.end, it.day) : ''}"></label>
     <p class="form-error"></p>`;
   openModal(isNew ? (it.kind === 'income' ? 'Add monthly income' : 'Add fixed cost') : 'Edit', body, {
     submitLabel: isNew ? 'Add' : 'Save',
@@ -2601,8 +2635,12 @@ function itemModal(src) {
       form.addEventListener('change', e => {
         if (e.target.name !== 'kind') return;
         $('.fixed-only', form).hidden = e.target.value !== 'fixed';
-        $('.day-label', form).textContent = e.target.value === 'income' ? 'Comes in on day' : 'Taken on day';
+        $('.rf-label', form).textContent = e.target.value === 'income' ? 'First comes in on' : 'First taken on';
       });
+      const hint = () => repeatHint(form, 'first', +el.every.value || 1);
+      form.addEventListener('input', hint);
+      form.addEventListener('change', hint);
+      hint();
       pickChip();
       $('[data-m=delete]', form)?.addEventListener('click', () => {
         if (confirm(`Delete "${it.name}" completely?\n\nIt also disappears from past months. To stop it from a certain month instead, set a "Last month".`)) {
@@ -2614,10 +2652,11 @@ function itemModal(src) {
       const amount = parseAmount(fd.amount);
       if (!fd.name.trim()) return formError(form, 'Please enter a name.');
       if (isNaN(amount) || amount < 0) return formError(form, 'Please enter a valid amount.');
-      if (!isMonth(fd.start)) return formError(form, 'Please choose the first month.');
-      if (fd.end && !isMonth(fd.end)) return formError(form, 'Last month looks wrong (YYYY-MM).');
-      if (fd.end && fd.end < fd.start) return formError(form, 'Last month is before the first month.');
-      Object.assign(it, { kind: fd.kind, name: fd.name.trim(), every: +fd.every || 1, start: fd.start, end: fd.end || null, day: readDay(fd.day) });
+      const first = readRepeat(form, 'first');
+      if (!first) return formError(form, 'Please pick the first date.');
+      if (fd.endDate && !isDate(fd.endDate)) return formError(form, 'The last date looks wrong.');
+      if (fd.endDate && fd.endDate < first.date) return formError(form, 'The last date is before the first one.');
+      Object.assign(it, { kind: fd.kind, name: fd.name.trim(), every: +fd.every || 1, start: first.m, end: fd.endDate ? fd.endDate.slice(0, 7) : null, day: first.day });
       if (fd.kind === 'fixed') it.group = (fd.group || '').trim() || fixedGroup({ name: it.name });
       else delete it.group;
       if (isNew) it.amounts = [{ from: it.start, amount }];
@@ -2635,6 +2674,17 @@ function periodValue(kind, day) {
   const d = parseInt(day, 10);
   return kind === 'day' && d >= 2 && d <= 31 ? d : null;
 }
+/** "from a date" budget form → { period (start day, null if the 1st), start, end (budget months), bad } */
+function readBudgetDates(form) {
+  const el = form.elements, v = el.periodStart.value, e = el.periodEnd.value;
+  if (!isDate(v)) return null;
+  // unchanged date keeps its day (a 31st shown as Feb 28 stays the 31st)
+  const day = v === el.periodStart.dataset.orig && el.periodStart.dataset.day ? +el.periodStart.dataset.day : +v.slice(8);
+  const period = periodValue('day', day);
+  const monthOf = d => (period ? Model.budgetMonthOf({ period }, { date: d, month: d.slice(0, 7) }) : d.slice(0, 7));
+  const start = monthOf(v), end = isDate(e) ? monthOf(e) : null;
+  return { period, start, end, bad: (e && !isDate(e)) || (end && end < start) };
+}
 function budgetModal(src) {
   const isNew = !src.id;
   const cur = ym();
@@ -2643,6 +2693,10 @@ function budgetModal(src) {
     : structuredClone(src);
   const effFrom = isNew ? null : (cur < b.start ? b.start : cur);
   const orig = isNew ? '' : Model.baseAmount(b, effFrom);
+  const dayKind = parseInt(b.period, 10) > 1;
+  // "from a date" budgets: shown as the date the first period starts and the date the last one ends
+  const pStart = dayKind ? Model.budgetPeriod(b, b.start).from : firstDate(b.start, 15);
+  const pEnd = dayKind && b.end ? Model.budgetPeriod(b, b.end).to : '';
   const body = `
     <div class="two emoji-row">
       <label class="field"><span>Icon</span><input name="emoji" value="${esc(b.emoji)}" maxlength="8" placeholder="🍔"></label>
@@ -2652,15 +2706,18 @@ function budgetModal(src) {
     <label class="field"><span>Planned per month</span><input name="amount" class="amount-input" inputmode="decimal" value="${orig}" placeholder="0.00"></label>
     ${isNew ? '' : `<p class="hint">A new amount applies from ${monthLabel(effFrom)} on. To change only one month, open the budget in the Month tab.</p>`}
     <fieldset class="field"><legend>Each budget period runs</legend>
-      ${segRadio('period', [['month', '1st to end of month'], ['pay', 'Payday to payday'], ['day', 'From day…']], b.period === 'pay' ? 'pay' : parseInt(b.period, 10) > 1 ? 'day' : 'month')}
+      ${segRadio('period', [['month', '1st to end of month'], ['pay', 'Payday to payday'], ['day', 'From a date…']], b.period === 'pay' ? 'pay' : dayKind ? 'day' : 'month')}
     </fieldset>
-    <label class="field period-day" ${parseInt(b.period, 10) > 1 ? '' : 'hidden'}><span>Starts on day (each month)</span><input name="periodDay" type="number" inputmode="numeric" min="2" max="31" value="${parseInt(b.period, 10) > 1 ? parseInt(b.period, 10) : 15}"></label>
+    <div class="two period-date" ${dayKind ? '' : 'hidden'}>
+      <label class="field"><span>First period starts on</span><input type="date" name="periodStart" value="${pStart}" data-orig="${pStart}" data-day="${dayKind ? parseInt(b.period, 10) : ''}"></label>
+      <label class="field"><span>Last period ends on (optional)</span><input type="date" name="periodEnd" value="${pEnd}"></label>
+    </div>
+    <div class="two period-month" ${dayKind ? 'hidden' : ''}>
+      <label class="field"><span>First month</span><input type="month" name="start" value="${b.start}"></label>
+      <label class="field"><span>Last month (optional)</span><input type="month" name="end" value="${dayKind ? '' : b.end || ''}"></label>
+    </div>
     <p class="hint period-preview"></p>
     <label class="toggle"><input type="checkbox" name="rollover" ${b.rollover ? 'checked' : ''}><span><b>Carry over</b> — money not spent in one period is added to the next (and overspending is taken off the next).</span></label>
-    <div class="two">
-      <label class="field"><span>First month</span><input type="month" name="start" value="${b.start}" required></label>
-      <label class="field"><span>Last month (optional)</span><input type="month" name="end" value="${b.end || ''}"></label>
-    </div>
     <p class="form-error"></p>`;
   openModal(isNew ? 'Add budget' : 'Edit budget', body, {
     submitLabel: isNew ? 'Add' : 'Save',
@@ -2671,11 +2728,23 @@ function budgetModal(src) {
       // show which dates the period would cover this month
       const updPeriod = () => {
         const kind = form.querySelector('input[name=period]:checked').value;
-        $('.period-day', form).hidden = kind !== 'day';
-        const p = Model.budgetPeriod({ period: periodValue(kind, form.elements.periodDay.value) }, UI.month);
+        $('.period-date', form).hidden = kind !== 'day';
+        $('.period-month', form).hidden = kind === 'day';
+        if (kind === 'day') {
+          const r = readBudgetDates(form);
+          const pv = $('.period-preview', form);
+          if (!r) { pv.textContent = 'Pick the date your first period starts — every period then starts on that day of the month.'; return; }
+          if (!r.period) { pv.textContent = `Starts on the 1st — that's a normal month (${monthLabel(r.start)} on).`; return; }
+          const bb = { period: r.period }, p1 = Model.budgetPeriod(bb, r.start), p2 = Model.budgetPeriod(bb, addMonths(r.start, 1));
+          pv.textContent = `Every period starts on day ${r.period}${r.period > 28 ? ' (or the last day of shorter months)' : ''}: ${dateLabel(p1.from)} – ${dateLabel(p1.to)}, then ${dateLabel(p2.from)} – ${dateLabel(p2.to)} …`
+            + ` The first one counts as the budget for ${monthLabel(r.start)} (a period belongs to the month it covers most of).`
+            + (r.end ? ` Last one: ${dateLabel(Model.budgetPeriod(bb, r.end).from)} – ${fullDate(Model.budgetPeriod(bb, r.end).to)}.` : '');
+          return;
+        }
+        const p = Model.budgetPeriod({ period: periodValue(kind) }, UI.month);
         const noPay = kind === 'pay' && !Model.paydayDate(UI.month);
         $('.period-preview', form).textContent = noPay
-          ? 'Set the day your salary comes in ("Comes in on day" on your income) — until then it runs from the 1st.'
+          ? 'Set the day your salary comes in ("First comes in on" on your income) — until then it runs from the 1st.'
           : `${monthLabel(UI.month)}: ${fullDate(p.from)} – ${fullDate(p.to)}${p.custom ? '. A period belongs to the month it covers most of.' : ''}`;
       };
       form.addEventListener('input', updPeriod);
@@ -2691,10 +2760,17 @@ function budgetModal(src) {
       const amount = parseAmount(fd.amount);
       if (!fd.name.trim()) return formError(form, 'Please enter a name.');
       if (isNaN(amount) || amount < 0) return formError(form, 'Please enter a valid amount.');
-      if (!isMonth(fd.start)) return formError(form, 'Please choose the first month.');
-      if (fd.end && (!isMonth(fd.end) || fd.end < fd.start)) return formError(form, 'Last month looks wrong.');
-      if (fd.period === 'day' && !(+fd.periodDay >= 2 && +fd.periodDay <= 31)) return formError(form, 'Start day must be between 2 and 31.');
-      Object.assign(b, { name: fd.name.trim(), emoji: fd.emoji.trim(), start: fd.start, end: fd.end || null, rollover: !!fd.rollover, period: periodValue(fd.period, fd.periodDay) });
+      let start = fd.start, end = fd.end || null, period = periodValue(fd.period);
+      if (fd.period === 'day') {
+        const r = readBudgetDates(form);
+        if (!r) return formError(form, 'Please pick the date your first period starts.');
+        if (r.bad) return formError(form, 'The last period ends before the first one starts.');
+        ({ start, end, period } = r);
+      } else {
+        if (!isMonth(start)) return formError(form, 'Please choose the first month.');
+        if (end && (!isMonth(end) || end < start)) return formError(form, 'Last month looks wrong.');
+      }
+      Object.assign(b, { name: fd.name.trim(), emoji: fd.emoji.trim(), start, end, rollover: !!fd.rollover, period });
       if (isNew) b.amounts = [{ from: b.start, amount }];
       else if (amount !== orig) Model.setAmountFrom(b, effFrom, amount);
       Store.put('budgets', b);
@@ -2763,11 +2839,10 @@ function creditModal(src) {
     </div>
     <div class="two">
       <label class="field"><span>Per month</span><input name="monthly" inputmode="decimal" value="${monthly}" placeholder="0.00"></label>
-      <label class="field"><span>First payment</span><input type="month" name="start" value="${c.start}" required></label>
     </div>
-    <div class="two">${dayField(c.day, 'Taken on day')}</div>
+    ${repeatField('first', 'First payment on', c.start, isNew ? newDay(c.start) : c.day, { noDay: 'The day changes — count it once I tick it' })}
     <p class="hint preview"></p>
-    ${isNew ? '<p class="hint">Already paying something off? Enter what is <b>still left</b> to pay, the number of payments left, and this month as the first payment.</p>' : ''}
+    ${isNew ? '<p class="hint">Already paying something off? Enter what is <b>still left</b> to pay, the number of payments left, and the next payment date as the first payment.</p>' : ''}
     <p class="form-error"></p>`;
   openModal(isNew ? 'Add credit / installments' : 'Edit credit', body, {
     submitLabel: isNew ? 'Add' : 'Save',
@@ -2777,9 +2852,10 @@ function creditModal(src) {
       if (isNew) setTimeout(() => el.name.focus(), 50);
       const preview = () => {
         const total = parseAmount(el.total.value), n = parseInt(el.payments.value, 10);
-        const p = $('.preview', form);
-        if (total > 0 && n >= 1 && isMonth(el.start.value)) {
-          const cc = { total, payments: n, start: el.start.value };
+        const p = $('.preview', form), first = readRepeat(form, 'first');
+        repeatHint(form, 'first', 1, n >= 1 ? n : 0);
+        if (total > 0 && n >= 1 && first) {
+          const cc = { total, payments: n, start: first.m };
           p.textContent = n === 1 ? `One payment of ${money(total)} in ${monthLabel(cc.start)}.`
             : `${n} × ${money(Model.creditPart(cc, 0))}${Model.creditPart(cc, n - 1) !== Model.creditPart(cc, 0) ? ` (last ${money(Model.creditPart(cc, n - 1))})` : ''} · ${monthLabel(cc.start, true)} – ${monthLabel(Model.creditEnd(cc), true)}`;
         } else p.textContent = '';
@@ -2791,7 +2867,8 @@ function creditModal(src) {
       };
       el.total.addEventListener('input', fromTotal);
       el.payments.addEventListener('input', fromTotal);
-      el.start.addEventListener('input', preview);
+      el.first.addEventListener('input', preview);
+      el.firstNoDay.addEventListener('change', preview);
       el.monthly.addEventListener('input', () => {
         const mo = parseAmount(el.monthly.value), n = parseInt(el.payments.value, 10);
         if (mo > 0 && n >= 1) el.total.value = r2(mo * n);
@@ -2807,8 +2884,9 @@ function creditModal(src) {
       if (!fd.name.trim()) return formError(form, 'Please enter a name.');
       if (!(total > 0)) return formError(form, 'Please enter the total amount.');
       if (!(n >= 1 && n <= 600)) return formError(form, 'Number of payments must be between 1 and 600.');
-      if (!isMonth(fd.start)) return formError(form, 'Please choose the month of the first payment.');
-      Object.assign(c, { name: fd.name.trim(), total, payments: n, start: fd.start, day: readDay(fd.day) });
+      const first = readRepeat(form, 'first');
+      if (!first) return formError(form, 'Please pick the date of the first payment.');
+      Object.assign(c, { name: fd.name.trim(), total, payments: n, start: first.m, day: first.day });
       Store.put('credits', c);
       toast(isNew ? 'Added' : 'Saved');
     },

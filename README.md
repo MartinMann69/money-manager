@@ -16,7 +16,7 @@ your data lives on your devices, and can optionally be synced through your own p
   (or how much you're over) plus a per-day amount for the rest of the month.
   Turn on **Carry over** for a budget and unused money moves to next month (overspending is taken off next month).
   Each budget can run **1st to end of month**, **payday to payday** (uses the day your salary comes in) or **from a
-  chosen day**. Spending then counts in the period its date falls in; the card shows the dates (e.g. "Oct 25 – Nov 24").
+  date** — pick e.g. March 15 in the calendar and every period starts on the 15th. Spending then counts in the period its date falls in; the card shows the dates (e.g. "Oct 25 – Nov 24").
   A period belongs to the month it covers most of, so with salary on the 25th, Oct 25 – Nov 24 is November's budget;
   when it's over, the Month view points you to the next month where the new period is.
 - **Savings goals** (Goals tab) — "Holiday €1,200 by June": the app works out the monthly amount, counts it in
@@ -43,8 +43,12 @@ your data lives on your devices, and can optionally be synced through your own p
   there, and drag them back or tap **＋ Add**. On a phone, use **↕ Arrange** for ↑ ↓ buttons. Remembered per
   device; "Reset layout" at the bottom of the sidebar puts everything back.
 - **Other spending** — anything you paid that isn't in a budget.
-- **Payment calendar** — set the day your money comes in and the day each cost, credit or savings amount is taken
-  ("Comes in on day" / "Taken on day" in the form; the bank import fills it in automatically). The calendar runs
+- **Pick one date** — forms for income, fixed costs, credits and savings goals ask for a single date from a calendar
+  ("First taken on", "First payment on", "First put aside on"): the month and the day each time come from it, and the
+  form shows the next dates (e.g. "Every 3 months on day 15: Mar 15, Jun 15, Sep 15 …"). Tick "The day changes" for
+  things without a fixed day — they count once you tick them.
+- **Payment calendar** — uses the day your money comes in and the day each cost, credit or savings amount is taken
+  (from the date you picked in the form; the bank import fills it in automatically). The calendar runs
   from payday to payday: what's still coming is listed first, what already happened below it, each with what you'd
   have after that day, plus how much you should have right now and a warning if it gets tight before payday. Enter what was on your account on the 1st once so the amounts are real.
 - **Needed until payday** — from one salary to the next: which bills are taken in between, how much that is, plus

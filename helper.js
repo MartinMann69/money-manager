@@ -256,7 +256,7 @@ function helperBuy() {
   return card('helper-buy', 'Buying plan', `${plan.filter(p => p.m).length} of ${plan.length} fit`, `
     <p class="small muted">One after another, so that you always keep at least <b>${money(keep)}</b> ${own ? '(your cushion)' : '(one month of essential costs as a safety buffer)'} — including all bills, budgets and goals.</p>
     <div class="btn-row" style="margin:6px 0 10px">${segRadio('helperOrder', [['list', 'Wishlist order'], ['cheap', 'Cheapest first']], UI.helperOrder === 'cheap' ? 'cheap' : 'list')}</div>
-    ${plan.map(({ w, m }) => `<div class="row"><span class="row-main"><span class="name">${esc(w.name)}</span><span class="sub">${wishPriceText(w)}${w.month && Model.wishPlanned(w) ? ` · planned now: ${monthLabel(w.month, true)}` : ''}</span></span>
+    ${plan.map(({ w, m }) => `<div class="row"><span class="row-main"><span class="name">${esc(w.name)}</span><span class="sub">${wishPriceText(w)}${w.month && Model.wishPlanned(w) ? ` · planned now: ${wishWhen(w, true)}` : ''}</span></span>
       <span class="amt ${m ? 'pos' : 'neg'}">${m ? esc(monthLabel(m, true)) : 'not in 2 years'}</span></div>`).join('')}
     ${changes ? `<button type="button" class="btn primary block" data-action="helper-apply-plan" style="margin-top:10px">Use this plan (${changes} change${changes === 1 ? '' : 's'})</button>` : '<p class="hint">✓ Your wishlist already follows this plan.</p>'}
     ${plan.some(p => !p.m) ? '<p class="hint">Something doesn\'t fit? Try paying it in installments (edit it on the Goals tab), lowering a want budget, or cancelling a subscription — then check here again.</p>' : ''}`,
@@ -346,7 +346,7 @@ Object.assign(actions, {
   'helper-apply-plan': () => {
     const plan = helperBuyPlanCompute();
     let n = 0;
-    for (const { w, m } of plan) if (m && m !== w.month) { edit('wishes', w.id, r => { r.month = m; }); n++; }
+    for (const { w, m } of plan) if (m && m !== w.month) { edit('wishes', w.id, r => setWishMonth(r, m)); n++; }
     toast(`Buying plan applied (${n} change${n === 1 ? '' : 's'})`);
   },
 });

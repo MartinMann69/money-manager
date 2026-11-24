@@ -302,6 +302,8 @@ const Model = {
     return m === start ? r2(w.price) : 0;
   },
   wishPlanned(w) { return !!(w.month && w.month >= ym()); },
+  /** day of month m the wish is paid (installments: same day every month), or null without an exact date */
+  wishDay(w, m) { return w.date && isDate(w.date) && w.month ? this.dayOf({ day: +w.date.slice(8) }, m) : null; },
 
   /** start-of-current-month balance and end-of-month balances for the next H months */
   /* ---- days within a month ---- */
@@ -324,7 +326,7 @@ const Model = {
     for (const r of S.fixed) if (!r.skipped) add(this.dayOf(r.it, m), r.it.name, -r.amount, 'fixed', { id: r.it.id, action: 'item-month', paid: r.paid, group: fixedGroup(r.it) });
     for (const r of S.credits) add(this.dayOf(r.c, m), r.c.name, -r.amount, 'credit', { id: r.c.id, action: 'edit-credit', paid: r.paid });
     for (const r of S.savings) add(this.dayOf(r.g, m), `${r.g.emoji ? r.g.emoji + ' ' : ''}${r.g.name}`, -r.amount, 'savings', { id: r.g.id, action: 'goal-month', paid: r.paid });
-    for (const r of S.wishes) add(null, r.w.name, -r.amount, 'wish', { id: r.w.id, action: 'edit-wish' });
+    for (const r of S.wishes) add(this.wishDay(r.w, m), r.w.name, -r.amount, 'wish', { id: r.w.id, action: 'edit-wish' });
     // everyday spending (budgets + other) by its date — counted, but not listed one by one
     const daily = new Array(dim + 2).fill(0);
     for (const b of S.budgets) for (const tx of b.txs) daily[txDay(tx)] -= tx.amount;
@@ -489,8 +491,11 @@ const Model = {
     // planned purchases in that period
     const wishes = [];
     for (let m = cur; m <= until.slice(0, 7); m = addMonths(m, 1)) {
-      // planned purchases have no day: this month's are still to come, later ones count from the 1st
-      for (const w of this.summarize(m).wishes) if (`${m}-01` <= until) wishes.push({ name: w.w.name, amount: w.amount, m });
+      // planned purchases count on their exact day (without one: this month's are still to come, later ones from the 1st)
+      for (const w of this.summarize(m).wishes) {
+        const date = `${m}-${pad(this.wishDay(w.w, m) || 1)}`;
+        if (date <= until) wishes.push({ name: w.w.name, amount: w.amount, m, date });
+      }
     }
     const wishTotal = r2(wishes.reduce((s, w) => s + w.amount, 0));
     // budget money (food etc.) still planned until then
@@ -1144,7 +1149,7 @@ function viewMonth() {
   const wishBody = S.wishes.map(({ w, amount, index }) => `<div class="row">
       <button type="button" class="row-main" data-action="edit-wish" data-id="${w.id}">
         <span class="name">${esc(w.name)}</span>
-        <span class="sub">${w.pay === 'split' && w.payments > 1 ? `Planned · payment ${index + 1} of ${w.payments}` : 'Planned purchase'}</span>
+        <span class="sub">${Model.wishDay(w, UI.month) ? `${dayDate(UI.month, Model.wishDay(w, UI.month))} · ` : ''}${w.pay === 'split' && w.payments > 1 ? `Planned · payment ${index + 1} of ${w.payments}` : 'Planned purchase'}</span>
       </button>
       ${index === 0 ? `<button type="button" class="mini" data-action="wish-bought" data-id="${w.id}">Bought it</button>` : ''}
       <span class="amt">${money(amount)}</span>
@@ -1324,7 +1329,7 @@ function calendarCard(S) {
   const m = S.m, t0 = today();
   const kindLabel = e => ({ income: 'Income', fixed: e.group || 'Fixed cost', credit: 'Credit', savings: 'Savings goal', wish: 'Planned purchase' }[e.kind] || '');
   const dated = C.ev.filter(e => e.day);
-  const isPast = e => e.date < t0 || (e.date === t0 && (e.paid || e.actual));
+  const isPast = e => e.kind !== 'wish' && (e.date < t0 || (e.date === t0 && (e.paid || e.actual)));
   const coming = dated.filter(e => !isPast(e)).sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : b.amount - a.amount));
   const done = dated.filter(isPast).sort((a, b) => (a.date > b.date ? -1 : a.date < b.date ? 1 : a.amount - b.amount));
   const nextIncomeAfter = date => coming.find(e => e.amount > 0 && e.date > date);
@@ -1527,6 +1532,16 @@ function goalCard(g) {
   </div>`;
 }
 
+/** plan wish w for month m (null = not decided); an exact date moves along (same day, never before today) */
+function setWishMonth(w, m) {
+  if (!m) { w.month = null; w.date = null; return; }
+  const d = isDate(w.date) ? +w.date.slice(8) : 0;
+  let date = d ? `${m}-${pad(Math.min(d, daysInMonth(m)))}` : null;
+  if (date && date < today()) date = today();
+  w.month = m; w.date = date;
+}
+const wishWhen = (w, short) => (isDate(w.date) && w.month ? (short ? dateLabel(w.date) : fullDate(w.date)) : monthLabel(w.month, short));
+
 function wishPriceText(w) {
   return w.pay === 'split' && w.payments > 1
     ? `${money(w.price)} · ${w.payments} × ${money(Model.creditPart({ total: w.price, payments: w.payments }, 0))}`
@@ -1542,8 +1557,8 @@ function wishCard(w, series) {
   const fit = planned ? Model.wishFit(w, w.month, base, months) : null;
   let status, cls = '';
   if (planned && fit) {
-    if (fit.ok) { cls = 'ok'; status = `✓ Planned for ${monthLabel(w.month)} — it fits. Lowest point afterwards: ${money(fit.worst)} in ${monthLabel(fit.worstM, true)}.`; }
-    else { cls = 'bad'; status = `⚠ Planned for ${monthLabel(w.month)} — doesn't fit: you'd go down to ${money(fit.worst)} in ${monthLabel(fit.worstM, true)}.${best ? ` It fits from ${monthLabel(best)}.` : ''}`; }
+    if (fit.ok) { cls = 'ok'; status = `✓ Planned for ${wishWhen(w)} — it fits. Lowest point afterwards: ${money(fit.worst)} in ${monthLabel(fit.worstM, true)}.`; }
+    else { cls = 'bad'; status = `⚠ Planned for ${wishWhen(w)} — doesn't fit: you'd go down to ${money(fit.worst)} in ${monthLabel(fit.worstM, true)}.${best ? ` It fits from ${monthLabel(best)}.` : ''}`; }
   } else if (best) {
     cls = 'ok';
     status = `${w.month && w.month < cur ? `Was planned for ${monthLabel(w.month, true)}. ` : ''}${best === cur ? 'Fits this month already.' : `Fits best from ${monthLabel(best)}.`}`;
@@ -1565,7 +1580,7 @@ function wishCard(w, series) {
       <span class="name">${esc(w.name)}</span><span class="amt">${wishPriceText(w)}</span>
     </div>
     <div class="wish-status ${cls}">${esc(status)}</div>
-    <div class="btn-row">${btns.join('')}<button type="button" class="btn small" data-action="edit-wish" data-id="${w.id}">Choose month…</button></div>
+    <div class="btn-row">${btns.join('')}<button type="button" class="btn small" data-action="edit-wish" data-id="${w.id}">${planned ? 'Change date…' : 'Choose month or day…'}</button></div>
   </div>`;
 }
 
@@ -1576,7 +1591,7 @@ function viewGoals() {
   const series = Model.balanceSeries(24);
   const s = Store.data.settings;
   const totalSaved = r2(goals.reduce((sum, g) => sum + Model.goalSavedBy(g, ym()), 0));
-  const sortedWishes = [...wishes].sort((a, b) => (Model.wishPlanned(b) - Model.wishPlanned(a)) || ((a.month || '9') < (b.month || '9') ? -1 : 1));
+  const sortedWishes = [...wishes].sort((a, b) => (Model.wishPlanned(b) - Model.wishPlanned(a)) || ((a.date || a.month || '9') < (b.date || b.month || '9') ? -1 : 1));
   return `
   <h1 class="page-title">Goals</h1>
   <p class="muted page-sub">Save up for something, or check if something you're thinking of buying fits into your plan — and when.</p>
@@ -1593,7 +1608,7 @@ function viewGoals() {
         addBtn('add-wish', 'Something I want to buy'), '', 'goals-wishes',
         joinSum(sortedWishes.length ? sortedWishes.slice(0, 3).map(w => {
           const best = Model.wishBest(w, Model.seriesWithout(w, series), series.months);
-          return `${esc(w.name)} ${Model.wishPlanned(w) ? `→ ${esc(monthLabel(w.month, true))}` : best ? `fits ${esc(monthLabel(best, true))}` : `<span class="neg">doesn't fit</span>`}`;
+          return `${esc(w.name)} ${Model.wishPlanned(w) ? `→ ${esc(wishWhen(w, true))}` : best ? `fits ${esc(monthLabel(best, true))}` : `<span class="neg">doesn't fit</span>`}`;
         }) : ['nothing on your list']))}
     </div>
     <div class="col">
@@ -1729,7 +1744,7 @@ function goalMonthModal(id) {
 function wishModal(src) {
   const isNew = !src.id;
   const cur = ym();
-  const w = isNew ? { id: uid(), name: '', price: '', pay: 'once', payments: 3, month: null } : structuredClone(src);
+  const w = isNew ? { id: uid(), name: '', price: '', pay: 'once', payments: 3, month: null, date: null } : structuredClone(src);
   const series = Model.balanceSeries(24);
   const base = Model.seriesWithout(isNew ? null : src, series);
   const chipMonths = series.months.slice(0, 12);
@@ -1744,6 +1759,7 @@ function wishModal(src) {
         <button type="button" class="mchip ${!w.month || w.month < cur ? 'sel' : ''}" data-mm="">Not decided</button>
         ${chipMonths.map(m => `<button type="button" class="mchip ${w.month === m ? 'sel' : ''}" data-mm="${m}">${esc(monthLabel(m, true))}</button>`).join('')}
       </div>
+      <label class="field" style="margin:10px 0 0"><span>Exact day (optional)</span><input type="date" name="date" min="${today()}" value="${isDate(w.date) && w.month >= cur ? w.date : ''}"></label>
       <p class="hint fit-detail"></p>
     </fieldset>
     <input type="hidden" name="month" value="${w.month && w.month >= cur ? w.month : ''}">
@@ -1771,20 +1787,28 @@ function wishModal(src) {
         $('.fit-best', form).textContent = !valid ? 'Enter a price to see which months it fits.'
           : best ? `★ Earliest month it fits: ${monthLabel(best)}. Green = fits, red = too tight.` : "It doesn't fit in the next 2 years with your current plan.";
         const sel = el.month.value;
+        const when = isDate(el.date.value) ? `on ${fullDate(el.date.value)}` : `in ${monthLabel(sel)}`;
         const d = $('.fit-detail', form);
         if (valid && sel) {
           const f = Model.wishFit(c, sel, base, series.months);
           d.className = `hint fit-detail ${f.ok ? 'pos' : 'neg'}`;
-          d.textContent = f.ok ? `Fits in ${monthLabel(sel)}. Your lowest point afterwards: ${money(f.worst)} (${monthLabel(f.worstM, true)}).`
-            : `Too tight in ${monthLabel(sel)}: you'd go down to ${money(f.worst)} in ${monthLabel(f.worstM, true)}.`;
+          d.textContent = f.ok ? `Fits ${when}. Your lowest point afterwards: ${money(f.worst)} (${monthLabel(f.worstM, true)}).`
+            : `Too tight ${when}: you'd go down to ${money(f.worst)} in ${monthLabel(f.worstM, true)}.`;
         } else d.textContent = '';
       };
+      const selChip = m => $$('.mchip', form).forEach(x => x.classList.toggle('sel', x.dataset.mm === m));
       $$('.mchip', form).forEach(b => (b.onclick = () => {
-        $$('.mchip', form).forEach(x => x.classList.remove('sel'));
-        b.classList.add('sel');
+        const tmp = { date: el.date.value };
+        setWishMonth(tmp, b.dataset.mm || null);
         el.month.value = b.dataset.mm;
+        el.date.value = tmp.date || '';
+        selChip(b.dataset.mm);
         upd();
       }));
+      // picking a day also picks its month
+      el.date.addEventListener('change', () => {
+        if (isDate(el.date.value)) { el.month.value = el.date.value.slice(0, 7); selChip(el.month.value); }
+      });
       form.addEventListener('input', upd);
       form.addEventListener('change', upd);
       upd();
@@ -1797,9 +1821,11 @@ function wishModal(src) {
       if (!fd.name.trim()) return formError(form, 'What is it?');
       if (!(price > 0)) return formError(form, 'Please enter the price.');
       if (fd.pay === 'split' && !(n >= 2 && n <= 120)) return formError(form, 'Number of payments must be between 2 and 120.');
-      Object.assign(w, { name: fd.name.trim(), price, pay: fd.pay, payments: fd.pay === 'split' ? n : 1, month: isMonth(fd.month) ? fd.month : null });
+      if (isDate(fd.date) && fd.date < today()) return formError(form, 'That day is already over — pick today or later.');
+      const month = isDate(fd.date) ? fd.date.slice(0, 7) : isMonth(fd.month) ? fd.month : null;
+      Object.assign(w, { name: fd.name.trim(), price, pay: fd.pay, payments: fd.pay === 'split' ? n : 1, month, date: month && isDate(fd.date) ? fd.date : null });
       Store.put('wishes', w);
-      toast(w.month ? `Planned for ${monthLabel(w.month)}` : (isNew ? 'Added to your list' : 'Saved'));
+      toast(w.month ? `Planned for ${wishWhen(w)}` : (isNew ? 'Added to your list' : 'Saved'));
     },
   });
 }
@@ -2582,8 +2608,9 @@ const actions = {
   'edit-wish': el => { const w = Store.get('wishes', el.dataset.id); if (w) wishModal(w); },
   'wish-plan': el => {
     const m = el.dataset.m || null;
-    edit('wishes', el.dataset.id, w => { w.month = m; });
-    toast(m ? `Planned for ${monthLabel(m)}` : 'Not planned any more');
+    let when = '';
+    edit('wishes', el.dataset.id, w => { setWishMonth(w, m); when = m ? wishWhen(w) : ''; });
+    toast(m ? `Planned for ${when}` : 'Not planned any more');
   },
   'wish-bought': el => {
     const w = Store.get('wishes', el.dataset.id);

@@ -20,7 +20,8 @@ your data lives on your devices, and can optionally be synced through your own p
   in the Month view.
 - **Thinking of buying** (Goals tab) — add things you'd like to buy, paid at once or in installments.
   The app checks whether it fits your plan and shows the earliest month it fits (green/red month buttons).
-  Plan it for a month and it's included in that month's numbers; tap **Bought it** when you buy it.
+  Plan it for a month — or an exact day — and it's included in that month's numbers (with a day it also shows up in
+  the payment calendar and counts in "Free to spend" only if it falls before payday); tap **Bought it** when you buy it.
   "Always keep at least" sets a cushion the app won't plan below.
 - **Helper** tab — a budget coach that works only with your own numbers, on your device (rules of thumb, not
   financial advice): a money check-up score, a needs / wants / savings plan (50/30/20, adjusted when essentials are

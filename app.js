@@ -1466,6 +1466,32 @@ function needCard(S) {
 }
 
 /* ---------------- Goals view (savings goals + wishlist) ---------------- */
+/* Goals have exact dates. Money is put aside once a month on the goal's day (or at the start of the month
+   when no day is set), so a date tells us which monthly amounts still count:
+   - start date: the first month whose saving day is on/after it
+   - target date: the last month whose saving day is on/before it */
+const fullDate = d => {
+  const [y, mo, da] = d.split('-').map(Number);
+  return new Date(y, mo - 1, da).toLocaleDateString(locale(), { day: 'numeric', month: 'short', year: 'numeric' });
+};
+/** the date to reach the goal by (old goals stored only a month = end of that month) */
+function goalDeadlineDate(g) {
+  if (isDate(g.deadline)) return g.deadline;
+  if (isMonth(g.deadline)) return `${g.deadline}-${pad(daysInMonth(g.deadline))}`;
+  return null;
+}
+function goalSaveDay(day, m) { return day ? Math.min(day, daysInMonth(m)) : 1; }
+/** first month that gets a contribution when saving starts on `date` */
+function goalFirstMonth(date, day) {
+  const m = date.slice(0, 7);
+  if (!day) return m; // no fixed day: this month still counts
+  return goalSaveDay(day, m) >= +date.slice(8) ? m : addMonths(m, 1);
+}
+/** last month whose contribution comes in time for `date` */
+function goalLastMonth(date, day) {
+  const m = date.slice(0, 7);
+  return goalSaveDay(day, m) <= +date.slice(8) ? m : addMonths(m, -1);
+}
 function goalStatus(g) {
   const cur = ym();
   const saved = Model.goalSavedBy(g, cur);
@@ -1473,13 +1499,16 @@ function goalStatus(g) {
   if (g.done) return { saved, text: 'Finished — no more saving planned.' };
   if (saved >= g.target) return { saved, text: '🎉 Reached!' };
   if (!plan.reach) return { saved, text: 'Set a monthly amount to reach it.', bad: true };
-  let text = `${money(g.monthly)}/month · reached in ${monthLabel(plan.reach)}`;
+  const reachText = g.day ? `on ${fullDate(`${plan.reach}-${pad(goalSaveDay(g.day, plan.reach))}`)}` : `in ${monthLabel(plan.reach)}`;
+  let text = `${money(g.monthly)}/month · reached ${reachText}`;
   let bad = false;
-  if (g.deadline && plan.reach > g.deadline) {
-    const monthsLeft = monthDiff(cur, g.deadline); // months after this one
+  const dl = goalDeadlineDate(g);
+  if (dl && plan.reach > goalLastMonth(dl, g.day)) {
+    const last = goalLastMonth(dl, g.day);
+    const monthsLeft = monthDiff(cur, last); // saving months after this one
     text += monthsLeft > 0
-      ? ` — too late for ${monthLabel(g.deadline, true)}. You'd need ${money(Math.ceil(((g.target - saved) / monthsLeft) * 100) / 100)}/month from next month.`
-      : ` — not reached by ${monthLabel(g.deadline, true)}.`;
+      ? ` — too late for ${fullDate(dl)}. You'd need ${money(Math.ceil(((g.target - saved) / monthsLeft) * 100) / 100)}/month from next month.`
+      : ` — not reached by ${fullDate(dl)}.`;
     bad = true;
   }
   return { saved, text, bad };
@@ -1494,7 +1523,7 @@ function goalCard(g) {
       <span class="amt">${money(st.saved)} <span class="muted">/ ${money(g.target)}</span></span>
     </div>
     <div class="bar ok"><i style="width:${pct}%"></i></div>
-    <div class="sub-wrap ${st.bad ? 'neg' : 'muted'}">${esc(st.text)}${g.deadline && !st.bad && !g.done ? ` <span class="muted">(goal: ${esc(monthLabel(g.deadline, true))})</span>` : ''}</div>
+    <div class="sub-wrap ${st.bad ? 'neg' : 'muted'}">${esc(st.text)}${goalDeadlineDate(g) && !st.bad && !g.done ? ` <span class="muted">(goal: ${esc(fullDate(goalDeadlineDate(g)))})</span>` : ''}</div>
   </div>`;
 }
 
@@ -1597,8 +1626,8 @@ function goalModal(src) {
       <label class="field"><span>Already saved</span><input name="initial" inputmode="decimal" value="${g.initial || 0}"></label>
     </div>
     <div class="two">
-      <label class="field"><span>Start saving in</span><input type="month" name="start" value="${g.start}"></label>
-      <label class="field"><span>Reach it by (optional)</span><input type="month" name="deadline" value="${g.deadline || ''}"></label>
+      <label class="field"><span>Start saving on</span><input type="date" name="startDate" value="${g.startDate || (isNew ? today() : `${g.start}-01`)}"></label>
+      <label class="field"><span>Reach it by (optional)</span><input type="date" name="deadline" value="${goalDeadlineDate(g) || ''}"></label>
     </div>
     <div class="two">
       <label class="field"><span>Put aside per month</span><input name="monthly" inputmode="decimal" value="${g.monthly}" placeholder="from the date"></label>
@@ -1617,21 +1646,28 @@ function goalModal(src) {
       const recalc = fromMonthly => {
         if (fromMonthly) manual = true;
         const target = parseAmount(el.target.value), initial = parseAmount(el.initial.value) || 0;
-        if (!fromMonthly && !manual && target > 0 && isMonth(el.deadline.value) && isMonth(el.start.value) && el.deadline.value >= el.start.value) {
-          const n = monthDiff(el.start.value, el.deadline.value) + 1;
+        const day = readDay(el.day.value);
+        const sd = el.startDate.value, dl = el.deadline.value;
+        const first = isDate(sd) ? goalFirstMonth(sd, day) : null;
+        const last = isDate(dl) ? goalLastMonth(dl, day) : null;
+        const n = first && last ? monthDiff(first, last) + 1 : 0; // how many monthly amounts fit between the dates
+        if (!fromMonthly && !manual && target > 0 && n > 0) {
           el.monthly.value = Math.max(0, Math.ceil(((target - initial) / n) * 100) / 100);
         }
         const monthly = parseAmount(el.monthly.value);
         const p = $('.preview', form);
-        if (target > 0 && isMonth(el.start.value)) {
-          const plan = Model.goalPlan({ ...g, target, initial, start: el.start.value, monthly: monthly || 0, put: g.put || {} });
-          p.textContent = initial >= target ? 'Already reached!' : plan.reach
-            ? `${money(monthly)}/month from ${monthLabel(el.start.value, true)} → reached in ${monthLabel(plan.reach)}.`
-            : 'Enter how much to put aside per month (or a date to work it out).';
+        if (target > 0 && first) {
+          const plan = Model.goalPlan({ ...g, target, initial, start: first, day, monthly: monthly || 0, put: g.put || {} });
+          const when = m => (day ? fullDate(`${m}-${pad(goalSaveDay(day, m))}`) : monthLabel(m));
+          p.textContent = initial >= target ? 'Already reached!'
+            : isDate(dl) && n <= 0 ? 'The "reach it by" date is too close — no monthly amount fits in before it.'
+              : plan.reach
+                ? `${money(monthly)}/month${n > 0 ? ` × ${n}` : ''}, first ${when(first)} → reached ${day ? 'on' : 'in'} ${when(plan.reach)}${isDate(dl) && plan.reach > last ? ` — that's after ${fullDate(dl)}` : ''}.`
+                : 'Enter how much to put aside per month (or a date to work it out).';
         } else p.textContent = '';
       };
       el.monthly.addEventListener('input', () => recalc(true));
-      ['target', 'initial', 'start'].forEach(n => el[n].addEventListener('input', () => recalc(false)));
+      ['target', 'initial', 'startDate', 'day'].forEach(n => el[n].addEventListener('input', () => recalc(false)));
       el.deadline.addEventListener('input', () => { manual = false; recalc(false); });
       recalc(false);
       $('[data-m=delete]', form)?.addEventListener('click', () => {
@@ -1646,10 +1682,14 @@ function goalModal(src) {
       const target = parseAmount(fd.target), initial = parseAmount(fd.initial) || 0, monthly = parseAmount(fd.monthly) || 0;
       if (!fd.name.trim()) return formError(form, 'Please enter what you are saving for.');
       if (!(target > 0)) return formError(form, 'Please enter a target amount.');
-      if (!isMonth(fd.start)) return formError(form, 'Please choose a start month.');
-      if (fd.deadline && (!isMonth(fd.deadline) || fd.deadline < fd.start)) return formError(form, 'The "reach it by" month is before the start.');
+      if (!isDate(fd.startDate)) return formError(form, 'Please choose the date you start saving.');
+      if (fd.deadline && (!isDate(fd.deadline) || fd.deadline < fd.startDate)) return formError(form, 'The "reach it by" date is before the start.');
       if (monthly <= 0 && initial < target) return formError(form, 'Please enter how much to put aside per month.');
-      Object.assign(g, { name: fd.name.trim(), emoji: fd.emoji.trim(), target, initial, start: fd.start, deadline: fd.deadline || '', monthly, day: readDay(fd.day) });
+      const day = readDay(fd.day);
+      Object.assign(g, {
+        name: fd.name.trim(), emoji: fd.emoji.trim(), target, initial, monthly, day,
+        startDate: fd.startDate, start: goalFirstMonth(fd.startDate, day), deadline: fd.deadline || '',
+      });
       Store.put('goals', g);
       toast(isNew ? 'Goal added' : 'Saved');
     },

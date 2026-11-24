@@ -190,7 +190,7 @@ function helperSaving(D) {
         const months = Math.max(1, monthDiff(cur, f.next));
         const per = Math.ceil((f.amount / months) * 100) / 100;
         return `<div class="row"><span class="row-main"><span class="name">${esc(f.it.name)}</span><span class="sub">${money(f.amount)} ${EVERY[f.it.every].toLowerCase()} · next ${monthLabel(f.next, true)} → ${money(per)}/month until then</span></span>
-          ${covered(f.it.name) ? '<span class="muted small">✓ goal exists</span>' : `<button type="button" class="btn small" data-action="helper-goal" data-name="${esc(f.it.name)}" data-emoji="📅" data-target="${f.amount}" data-monthly="${per}" data-deadline="${addMonths(f.next, -1) >= cur ? addMonths(f.next, -1) : cur}">Save for it</button>`}</div>`;
+          ${covered(f.it.name) ? '<span class="muted small">✓ goal exists</span>' : `<button type="button" class="btn small" data-action="helper-goal" data-name="${esc(f.it.name)}" data-emoji="📅" data-target="${f.amount}" data-monthly="${per}" data-deadline="${f.next}-${pad(Model.dayOf(f.it, f.next) || 1)}">Save for it</button>`}</div>`;
       }).join('')}</div>` : '';
   return card('helper-saving', 'Saving', E.goal ? `${pctOf(E.saved, E.target)}% emergency fund` : '', `${emergency}${lumpyHtml}`,
     joinSum([E.goal ? `emergency fund ${pctOf(E.saved, E.target)}%` : 'no emergency fund yet', lumpy.length ? `${lumpy.length} bill${lumpy.length === 1 ? '' : 's'} to save for` : '']));

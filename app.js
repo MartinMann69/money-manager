@@ -364,7 +364,8 @@ const Model = {
       now = start;
       for (const e of ev) {
         if (e.kind === 'wish') continue;
-        const happened = e.actual ? (e.day || 1) <= todayD : (e.paid || (e.day && e.day <= todayD));
+        // entries you typed in count from their date; income/bills once ticked, or automatically the day after their day
+        const happened = e.actual ? (e.day || 1) <= todayD : (e.paid || (e.day && e.day < todayD));
         if (happened) now += e.amount;
         else if (!e.day) pending.push(e);
       }
@@ -469,7 +470,8 @@ const Model = {
       plus this month's bills without a day that aren't ticked yet */
   billsStillToPay(until) {
     const cur = ym(), t0 = today();
-    const bills = this.billsBetween(t0, until).filter(b => (b.m !== cur || b.day) && (b.date > t0 || !b.paid));
+    // a bill is either still to pay or already paid (ticked) — never both
+    const bills = this.billsBetween(t0, until).filter(b => (b.m !== cur || b.day) && !b.paid);
     for (const e of this.timeline(cur).pending) if (e.amount < 0) bills.push({ ...e, amount: -e.amount, date: null, m: cur });
     return bills.sort((a, b) => ((a.date || '') < (b.date || '') ? -1 : 1));
   },
@@ -1322,7 +1324,7 @@ function calendarCard(S) {
   const m = S.m, t0 = today();
   const kindLabel = e => ({ income: 'Income', fixed: e.group || 'Fixed cost', credit: 'Credit', savings: 'Savings goal', wish: 'Planned purchase' }[e.kind] || '');
   const dated = C.ev.filter(e => e.day);
-  const isPast = e => e.date <= t0;
+  const isPast = e => e.date < t0 || (e.date === t0 && (e.paid || e.actual));
   const coming = dated.filter(e => !isPast(e)).sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : b.amount - a.amount));
   const done = dated.filter(isPast).sort((a, b) => (a.date > b.date ? -1 : a.date < b.date ? 1 : a.amount - b.amount));
   const nextIncomeAfter = date => coming.find(e => e.amount > 0 && e.date > date);

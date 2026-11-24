@@ -355,6 +355,7 @@ const Model = {
   /* ---- savings goals ---- */
   /** contribution in each month from start until `until` */
   goalPlan(g, until) {
+    if (g.mode === 'manual') return this.goalManualPlan(g, until);
     let saved = r2(g.initial || 0), reach = saved >= g.target ? g.start : null;
     const months = new Map();
     const last = until || addMonths(g.start, 600);
@@ -376,8 +377,35 @@ const Model = {
     return e ? e.c : 0;
   },
   goalSavedBy(g, m) {
+    if (g.mode === 'manual') return r2((g.initial || 0) + (g.deposits || []).reduce((s, d) => s + (d.date.slice(0, 7) <= m ? d.amount : 0), 0));
     if (m < g.start) return r2(g.initial || 0);
     return this.goalPlan(g, m).saved;
+  },
+  /* goals where you add money yourself: no fixed monthly amount, just what you put in (and when) */
+  goalDeposits(g, m) { return (g.deposits || []).filter(d => d.date.slice(0, 7) === m); },
+  goalManualPlan(g, until) {
+    const deps = g.deposits || [];
+    const firstDep = deps.reduce((a, d) => (d.date.slice(0, 7) < a ? d.date.slice(0, 7) : a), g.start);
+    const lastDep = deps.reduce((a, d) => (d.date.slice(0, 7) > a ? d.date.slice(0, 7) : a), g.start);
+    let saved = r2(g.initial || 0), reach = saved >= g.target ? firstDep : null;
+    const months = new Map();
+    for (let k = firstDep; k <= (until || lastDep); k = addMonths(k, 1)) {
+      const c = r2(this.goalDeposits(g, k).reduce((s, d) => s + d.amount, 0));
+      saved = r2(saved + c);
+      months.set(k, { c, saved });
+      if (!reach && saved >= g.target) reach = k;
+    }
+    return { months, reach, saved };
+  },
+  /** how much should go into a "add it myself" goal in month m to reach it by its date (null without a date) */
+  goalNeed(g, m) {
+    const dl = goalDeadlineDate(g);
+    if (!dl || g.done || m > dl.slice(0, 7)) return null;
+    const before = this.goalSavedBy(g, addMonths(m, -1));
+    const monthsLeft = monthDiff(m, dl.slice(0, 7)) + 1;
+    const perMonth = Math.max(0, Math.ceil(((g.target - before) / monthsLeft) * 100) / 100);
+    const inM = r2(this.goalDeposits(g, m).reduce((s, d) => s + d.amount, 0));
+    return { perMonth, inM, still: r2(Math.max(0, perMonth - inM)), monthsLeft };
   },
 
   /* ---- wishlist ---- */
@@ -414,7 +442,11 @@ const Model = {
     }
     for (const r of S.fixed) if (!r.skipped) add(this.dayOf(r.it, m), r.it.name, -r.amount, 'fixed', { id: r.it.id, action: 'item-month', paid: r.paid, group: fixedGroup(r.it) });
     for (const r of S.credits) add(this.dayOf(r.c, m), r.c.name, -r.amount, 'credit', { id: r.c.id, action: 'edit-credit', paid: r.paid });
-    for (const r of S.savings) add(this.dayOf(r.g, m), `${r.g.emoji ? r.g.emoji + ' ' : ''}${r.g.name}`, -r.amount, 'savings', { id: r.g.id, action: 'goal-month', paid: r.paid });
+    const t0 = today();
+    for (const r of S.savings) if (r.manual) for (const d of r.deposits) {
+      add(+d.date.slice(8), `${r.g.emoji ? r.g.emoji + ' ' : ''}${r.g.name}`, -d.amount, 'savings', { id: r.g.id, action: 'goal-add', actual: true, paid: d.date <= t0 });
+    }
+    for (const r of S.savings) if (!r.manual) add(this.dayOf(r.g, m),`${r.g.emoji ? r.g.emoji + ' ' : ''}${r.g.name}`, -r.amount, 'savings', { id: r.g.id, action: 'goal-month', paid: r.paid });
     for (const r of S.wishes) add(this.wishDay(r.w, m), r.w.name, -r.amount, 'wish', { id: r.w.id, action: 'edit-wish' });
     // everyday spending (budgets + other) by its date — counted, but not listed one by one
     const daily = new Array(dim + 2).fill(0);
@@ -740,6 +772,14 @@ const Model = {
       if (d) S.credits.push({ c, ...d, paid: !!(c.paid && c.paid[m]) });
     }
     for (const g of Store.live('goals')) {
+      if (g.mode === 'manual') {
+        // only what you really put in counts; this month it's also listed (with a suggestion) when nothing is in yet
+        const deposits = this.goalDeposits(g, m);
+        const saved = this.goalSavedBy(g, m);
+        if (!deposits.length && !(m === cur && m >= g.start && !g.done && saved < g.target)) continue;
+        S.savings.push({ g, manual: true, deposits, amount: r2(deposits.reduce((s, d) => s + d.amount, 0)), saved, paid: true, changed: false });
+        continue;
+      }
       if (m < g.start) continue;
       const plan = this.goalPlan(g, m).months.get(m);
       if (!plan || (plan.c === 0 && !(g.put && Object.prototype.hasOwnProperty.call(g.put, m)))) continue;
@@ -1241,7 +1281,23 @@ function viewMonth() {
     </div>`;
   }).join('');
   const otherBody = S.other.map(tx => txRow(tx)).join('');
-  const savingsBody = S.savings.map(({ g, amount, saved, paid, changed }) => `<div class="row ${paid ? 'is-paid' : ''}">
+  const manualRow = ({ g, amount, saved, deposits }) => {
+    const need = Model.goalNeed(g, S.m);
+    const sub = [
+      deposits.length ? `you put in ${money(amount)}` : 'nothing put in yet',
+      need && need.still > 0 && saved < g.target ? `suggested ${money(need.still)} more this month` : '',
+      `${money(saved)} of ${money(g.target)}`,
+    ].filter(Boolean).join(' · ');
+    return `<div class="row">
+      <button type="button" class="row-main" data-action="goal-add" data-id="${g.id}">
+        <span class="name">${esc(g.emoji ? g.emoji + ' ' : '')}${esc(g.name)}</span>
+        <span class="sub">${sub}</span>
+      </button>
+      <button type="button" class="mini" data-action="goal-add" data-id="${g.id}">+ Add</button>
+      <span class="amt">${money(amount)}</span>
+    </div>`;
+  };
+  const savingsBody = S.savings.map(r => (r.manual ? manualRow(r) : '')).join('') + S.savings.filter(r => !r.manual).map(({ g, amount, saved, paid, changed }) => `<div class="row ${paid ? 'is-paid' : ''}">
       <button type="button" class="check ${paid ? 'on' : ''}" data-action="toggle-goal-paid" data-id="${g.id}" aria-label="Mark as put aside" title="Mark as put aside">✓</button>
       <button type="button" class="row-main" data-action="goal-month" data-id="${g.id}">
         <span class="name">${esc(g.emoji ? g.emoji + ' ' : '')}${esc(g.name)}</span>
@@ -1600,7 +1656,31 @@ function goalLastMonth(date, day) {
   const m = date.slice(0, 7);
   return goalSaveDay(day, m) <= +date.slice(8) ? m : addMonths(m, -1);
 }
+/** "add it myself" goals: how far along, and whether you're keeping up with the date */
+function goalManualStatus(g) {
+  const cur = ym(), t0 = today();
+  const saved = r2((g.initial || 0) + (g.deposits || []).reduce((s, d) => s + (d.date <= t0 ? d.amount : 0), 0));
+  if (g.done) return { saved, text: 'Finished.' };
+  if (saved >= g.target) return { saved, text: '🎉 Reached!' };
+  const togo = r2(g.target - saved);
+  const dl = goalDeadlineDate(g);
+  if (!dl) return { saved, text: `You add money whenever you like · ${money(togo)} to go.` };
+  if (dl < t0) return { saved, text: `Not reached by ${fullDate(dl)} — ${money(togo)} still missing.`, bad: true };
+  // where you should be at the start of this month if you saved evenly each month since the start
+  // (this month isn't over yet, so it only shows as a suggestion)
+  const sm = (g.startDate || `${g.start}-01`).slice(0, 7), dm = dl.slice(0, 7);
+  const total = monthDiff(sm, dm) + 1, done = Math.min(total, Math.max(0, monthDiff(sm, cur)));
+  const expected = r2((g.initial || 0) + (g.target - (g.initial || 0)) * done / total);
+  const before = Model.goalSavedBy(g, addMonths(cur, -1));
+  const need = Model.goalNeed(g, cur);
+  const pace = need ? `about ${money(need.perMonth)}/month until ${fullDate(dl)}` : '';
+  const month = need && need.still > 0 ? ` Still ${money(need.still)} for ${monthLabel(cur)}.` : need ? ` ✓ ${monthLabel(cur)} done.` : '';
+  const behind = r2(expected - before);
+  if (behind > 0.5) return { saved, text: `${money(behind)} behind — ${pace} gets you there (${money(togo)} to go).${month}`, bad: true };
+  return { saved, text: `✓ On track · ${money(togo)} to go, ${pace}.${month}` };
+}
 function goalStatus(g) {
+  if (g.mode === 'manual') return goalManualStatus(g);
   const cur = ym();
   const saved = Model.goalSavedBy(g, cur);
   const plan = Model.goalPlan(g);
@@ -1622,6 +1702,7 @@ function goalStatus(g) {
   return { saved, text, bad };
 }
 
+const lastDeposit = g => [...(g.deposits || [])].sort((a, b) => (a.date < b.date ? 1 : -1))[0];
 function goalCard(g) {
   const st = goalStatus(g);
   const pct = g.target > 0 ? Math.min(100, (st.saved / g.target) * 100) : 0;
@@ -1631,7 +1712,8 @@ function goalCard(g) {
       <span class="amt">${money(st.saved)} <span class="muted">/ ${money(g.target)}</span></span>
     </div>
     <div class="bar ok"><i style="width:${pct}%"></i></div>
-    <div class="sub-wrap ${st.bad ? 'neg' : 'muted'}">${esc(st.text)}${goalDeadlineDate(g) && !st.bad && !g.done ? ` <span class="muted">(goal: ${esc(fullDate(goalDeadlineDate(g)))})</span>` : ''}</div>
+    <div class="sub-wrap ${st.bad ? 'neg' : 'muted'}">${esc(st.text)}${goalDeadlineDate(g) && !st.bad && !g.done && g.mode !== 'manual' ? ` <span class="muted">(goal: ${esc(fullDate(goalDeadlineDate(g)))})</span>` : ''}</div>
+    ${g.mode === 'manual' && !g.done ? `<div class="btn-row" style="margin-top:8px"><button type="button" class="btn small primary" data-action="goal-add" data-id="${g.id}">+ Add money</button>${(g.deposits || []).length ? `<span class="muted small">last: ${money(lastDeposit(g).amount)} on ${esc(dateLabel(lastDeposit(g).date))}</span>` : ''}</div>` : ''}
   </div>`;
 }
 
@@ -1747,7 +1829,10 @@ function goalModal(src) {
       <label class="field"><span>Start saving on</span><input type="date" name="startDate" value="${g.startDate || (isNew ? today() : `${g.start}-01`)}"></label>
       <label class="field"><span>Reach it by (optional)</span><input type="date" name="deadline" value="${goalDeadlineDate(g) || ''}"></label>
     </div>
-    <div class="two">
+    <fieldset class="field"><legend>How do you save?</legend>
+      ${segRadio('mode', [['auto', 'Same amount every month'], ['manual', 'I add money myself']], g.mode === 'manual' ? 'manual' : 'auto')}
+    </fieldset>
+    <div class="two auto-only">
       <label class="field"><span>Put aside per month</span><input name="monthly" inputmode="decimal" value="${g.monthly}" placeholder="from the date"></label>
       ${dayField(g.day, 'Put aside on day')}
     </div>
@@ -1774,8 +1859,20 @@ function goalModal(src) {
         }
         const monthly = parseAmount(el.monthly.value);
         const p = $('.preview', form);
+        const manualMode = form.querySelector('input[name=mode]:checked').value === 'manual';
+        $('.auto-only', form).hidden = manualMode;
+        if (manualMode) {
+          // no fixed amount: show the pace needed to make the date
+          const sm = isDate(sd) ? sd.slice(0, 7) : cur, saved = Model.goalSavedBy({ ...g, mode: 'manual', initial }, addMonths(cur, -1));
+          const fromM = sm > cur ? sm : cur;
+          const n2 = isDate(dl) ? monthDiff(fromM, dl.slice(0, 7)) + 1 : 0;
+          p.textContent = !(target > 0) ? '' : saved >= target ? 'Already reached!'
+            : isDate(dl) ? (n2 > 0 ? `Nothing is taken automatically. To reach it by ${fullDate(dl)} you'd put in about ${money(Math.ceil(((target - saved) / n2) * 100) / 100)}/month (${n2} month${n2 === 1 ? '' : 's'}) — add money whenever and however much you like.` : 'The "reach it by" date is already over.')
+              : 'Nothing is taken automatically — add money whenever you like. Set a "reach it by" date to see how much per month that takes.';
+          return;
+        }
         if (target > 0 && first) {
-          const plan = Model.goalPlan({ ...g, target, initial, start: first, day, monthly: monthly || 0, put: g.put || {} });
+          const plan = Model.goalPlan({ ...g, mode: 'auto', target, initial, start: first, day, monthly: monthly || 0, put: g.put || {} });
           const when = m => (day ? fullDate(`${m}-${pad(goalSaveDay(day, m))}`) : monthLabel(m));
           p.textContent = initial >= target ? 'Already reached!'
             : isDate(dl) && n <= 0 ? 'The "reach it by" date is too close — no monthly amount fits in before it.'
@@ -1786,6 +1883,7 @@ function goalModal(src) {
       };
       el.monthly.addEventListener('input', () => recalc(true));
       ['target', 'initial', 'startDate', 'day'].forEach(n => el[n].addEventListener('input', () => recalc(false)));
+      form.querySelectorAll('input[name=mode]').forEach(r => r.addEventListener('change', () => recalc(false)));
       el.deadline.addEventListener('input', () => { manual = false; recalc(false); });
       recalc(false);
       $('[data-m=delete]', form)?.addEventListener('click', () => {
@@ -1802,14 +1900,90 @@ function goalModal(src) {
       if (!(target > 0)) return formError(form, 'Please enter a target amount.');
       if (!isDate(fd.startDate)) return formError(form, 'Please choose the date you start saving.');
       if (fd.deadline && (!isDate(fd.deadline) || fd.deadline < fd.startDate)) return formError(form, 'The "reach it by" date is before the start.');
-      if (monthly <= 0 && initial < target) return formError(form, 'Please enter how much to put aside per month.');
-      const day = readDay(fd.day);
+      const manualMode = fd.mode === 'manual';
+      if (!manualMode && monthly <= 0 && initial < target) return formError(form, 'Please enter how much to put aside per month.');
+      const day = manualMode ? g.day || null : readDay(fd.day);
+      if (!isNew && manualMode !== (g.mode === 'manual')) switchGoalMode(g, manualMode);
       Object.assign(g, {
-        name: fd.name.trim(), emoji: fd.emoji.trim(), target, initial, monthly, day,
-        startDate: fd.startDate, start: goalFirstMonth(fd.startDate, day), deadline: fd.deadline || '',
+        name: fd.name.trim(), emoji: fd.emoji.trim(), target, initial, monthly: manualMode ? (g.monthly || 0) : monthly, day,
+        startDate: fd.startDate, start: goalFirstMonth(fd.startDate, day), deadline: fd.deadline || '', mode: manualMode ? 'manual' : 'auto',
       });
+      if (manualMode && !g.deposits) g.deposits = [];
       Store.put('goals', g);
       toast(isNew ? 'Goal added' : 'Saved');
+    },
+  });
+}
+
+/** change how a goal is saved without changing what already happened:
+    monthly amounts so far become entries you added, entries you added become those months' amounts */
+function switchGoalMode(g, toManual) {
+  const cur = ym(), t0 = today();
+  if (toManual) {
+    const deps = [];
+    const plan = Model.goalPlan({ ...g, mode: 'auto' }, cur);
+    for (const [k, e] of plan.months) {
+      if (!e.c) continue;
+      const date = `${k}-${pad(goalSaveDay(g.day, k))}`;
+      // past months count; this month only if it's ticked or its day has passed
+      if (k < cur || (g.paid && g.paid[k]) || (g.day && date < t0)) deps.push({ id: uid(), date: date > t0 ? t0 : date, amount: e.c });
+    }
+    g.deposits = [...(g.deposits || []), ...deps];
+  } else {
+    const put = {}, paid = { ...(g.paid || {}) };
+    for (const d of g.deposits || []) { const k = d.date.slice(0, 7); put[k] = r2((put[k] || 0) + d.amount); paid[k] = true; }
+    g.put = { ...(g.put || {}), ...put };
+    g.paid = paid;
+    if (!(g.monthly > 0)) {
+      const need = Model.goalNeed({ ...g, mode: 'manual' }, addMonths(cur, 1));
+      g.monthly = need ? need.perMonth : 0;
+    }
+    g.deposits = [];
+  }
+}
+
+/** add money to (or take it out of) a goal you fill yourself */
+function goalDepositModal(id) {
+  const g = Store.get('goals', id);
+  if (!g) return;
+  const cur = ym();
+  const need = Model.goalNeed(g, cur);
+  const saved = goalManualStatus(g).saved;
+  const deps = [...(g.deposits || [])].sort((a, b) => (a.date < b.date ? 1 : -1));
+  const sugg = need && need.still > 0 ? need.still : '';
+  const body = `
+    <p class="muted">${money(saved)} of ${money(g.target)} saved${need ? ` · suggested this month: ${money(need.perMonth)}${need.inM ? ` (${money(need.inM)} already in)` : ''}` : ''}</p>
+    <fieldset class="field"><legend>What did you do?</legend>${segRadio('dir', [['in', 'Put money in'], ['out', 'Took money out']], 'in')}</fieldset>
+    <div class="two">
+      <label class="field"><span>Amount</span><input name="amount" class="amount-input" inputmode="decimal" value="${sugg}" placeholder="0.00"></label>
+      <label class="field"><span>Date</span><input type="date" name="date" value="${today()}"></label>
+    </div>
+    <p class="form-error"></p>
+    ${deps.length ? `<div class="cal-sub">Added so far</div><div class="list dep-list">${deps.map(d => `<div class="row">
+        <span class="row-main"><span class="name">${d.amount < 0 ? 'Took out' : 'Put in'}</span><span class="sub">${esc(fullDate(d.date))}</span></span>
+        <span class="amt ${d.amount < 0 ? 'neg' : ''}">${d.amount < 0 ? '−' : ''}${money(Math.abs(d.amount))}</span>
+        <button type="button" class="mini" data-dep="${d.id}" aria-label="Remove" title="Remove">✕</button>
+      </div>`).join('')}</div>` : ''}`;
+  openModal(`${esc(g.emoji || '')} ${esc(g.name)}`, body, {
+    submitLabel: 'Add',
+    extraButtons: '<button type="button" class="btn" data-m="edit">Edit goal…</button>',
+    onMount(form) {
+      setTimeout(() => form.elements.amount.select(), 50);
+      $('[data-m=edit]', form).onclick = () => goalModal(Store.get('goals', id));
+      $$('[data-dep]', form).forEach(b => (b.onclick = () => {
+        if (!confirm('Remove this entry?')) return;
+        edit('goals', id, r => { r.deposits = (r.deposits || []).filter(d => d.id !== b.dataset.dep); });
+        goalDepositModal(id);
+      }));
+    },
+    onSubmit(fd, form) {
+      const a = parseAmount(fd.amount);
+      if (!(a > 0)) return formError(form, 'Please enter an amount.');
+      if (!isDate(fd.date)) return formError(form, 'Please pick a date.');
+      const amount = fd.dir === 'out' ? -a : a;
+      edit('goals', id, r => { r.deposits = [...(r.deposits || []), { id: uid(), date: fd.date, amount }]; });
+      const left = r2(g.target - goalManualStatus(Store.get('goals', id)).saved);
+      toast(amount > 0 ? (left <= 0 ? '🎉 Goal reached!' : `Added — ${money(left)} to go`) : 'Taken out');
     },
   });
 }
@@ -2733,6 +2907,7 @@ const actions = {
   'add-goal': () => goalModal({}),
   'edit-goal': el => { const g = Store.get('goals', el.dataset.id); if (g) goalModal(g); },
   'goal-month': el => goalMonthModal(el.dataset.id),
+  'goal-add': el => goalDepositModal(el.dataset.id),
   'toggle-goal-paid': el => edit('goals', el.dataset.id, g => { g.paid = { ...(g.paid || {}) }; if (g.paid[UI.month]) delete g.paid[UI.month]; else g.paid[UI.month] = true; }),
   'add-wish': () => wishModal({}),
   'edit-wish': el => { const w = Store.get('wishes', el.dataset.id); if (w) wishModal(w); },

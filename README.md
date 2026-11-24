@@ -21,7 +21,10 @@ your data lives on your devices, and can optionally be synced through your own p
   when it's over, the Month view points you to the next month where the new period is.
 - **Savings goals** (Goals tab) — "Holiday €1,200 by June": the app works out the monthly amount, counts it in
   every month's plan, and tells you if you're falling behind. Put less/more aside in a single month by tapping it
-  in the Month view.
+  in the Month view. Or choose **"I add money myself"**: nothing is taken automatically — tap **+ Add money**
+  whenever you put something in (any amount, any date; "Took money out" works too). The goal shows how much is still
+  missing, about how much per month it takes to make the date, and whether you're on track or behind. Switching a goal
+  between the two ways keeps what you already saved.
 - **Thinking of buying** (Goals tab) — add things you'd like to buy, paid at once or in installments.
   The app checks whether it fits your plan and shows the earliest month it fits (green/red month buttons).
   Plan it for a month — or an exact day — and it's included in that month's numbers (with a day it also shows up in

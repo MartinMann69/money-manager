@@ -487,6 +487,10 @@ function applyImport(list) {
       if (touch('credits', id, c => { c.paid = { ...(c.paid || {}), [r.month]: true }; if (!c.day) c.day = +r.date.slice(8); })) marked++;
     } else if (kind === 'goal') {
       if (touch('goals', id, g => {
+        if (g.mode === 'manual') { // money you added yourself: becomes an entry with the bank's date
+          if (!(g.deposits || []).some(x => x.key === r.key)) g.deposits = [...(g.deposits || []), { id: uid(), date: r.date, amount: r.amount < 0 ? abs : -abs, key: r.key }];
+          return;
+        }
         g.paid = { ...(g.paid || {}), [r.month]: true };
         if (Math.abs(Model.goalContribution(g, r.month) - abs) >= 0.005) g.put = { ...(g.put || {}), [r.month]: abs };
       })) marked++;

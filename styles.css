@@ -241,6 +241,20 @@ main { max-width: 1240px; margin: 0 auto; padding: 4px 16px 72px; }
 .fc-pos i, .fc-neg i { display: block; width: 100%; border-radius: 6px 6px 0 0; background: var(--c-left); min-height: 2px; }
 .fc-neg i { border-radius: 0 0 6px 6px; background: var(--neg); }
 .fc-col:hover i { filter: brightness(1.1); }
+.fc-chart { height: 196px; padding-top: 20px; }
+.fc-pos, .fc-neg { position: relative; }
+.has-neg .fc-neg { margin-bottom: 16px; }
+.fc-val {
+  position: absolute; left: 50%; transform: translateX(-50%); white-space: nowrap; pointer-events: none;
+  font-size: 11px; font-weight: 650; font-variant-numeric: tabular-nums; color: var(--text); line-height: 1.1;
+}
+.fc-val.neg { color: var(--neg); }
+.fv-narrow { display: none; }
+@media (max-width: 640px) {
+  .fv-wide { display: none; }
+  .fv-narrow { display: inline; }
+  .fc-val { font-size: 10px; letter-spacing: -.02em; }
+}
 .fc-label { font-size: 11px; color: var(--muted); text-align: center; padding-top: 4px; white-space: nowrap; overflow: hidden; }
 .fc-list { display: flex; flex-direction: column; }
 .fc-row {

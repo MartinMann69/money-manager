@@ -1808,6 +1808,22 @@ function showHist(m) {
   $$('.hc-col').forEach(c => c.classList.toggle('sel', c.dataset.hist === m));
 }
 
+/** short amount for chart labels: "€940", "€1.2k" (wide screens) or "940", "1.2k" (phones, less room) */
+function shortAmount(v, symbol) {
+  const a = Math.abs(v), sign = v < 0 ? '−' : '';
+  const s = Store.data.settings;
+  if (a >= 1000) {
+    const k = (a / 1000).toLocaleString(locale(), { maximumFractionDigits: a >= 10000 ? 0 : 1 });
+    return `${sign}${symbol ? money(0).replace(/[\d.,\s ]+/, '').trim() : ''}${k}k`;
+  }
+  if (!symbol) return sign + Math.round(a).toLocaleString(locale());
+  try { return sign + new Intl.NumberFormat(s.locale || undefined, { style: 'currency', currency: s.currency || 'EUR', maximumFractionDigits: 0 }).format(Math.round(a)); }
+  catch { return sign + Math.round(a); }
+}
+function barValue(v, pos) {
+  return `<span class="fc-val ${v < 0 ? 'neg' : ''}" style="${pos}"><span class="fv-wide">${esc(shortAmount(v, true))}</span><span class="fv-narrow">${esc(shortAmount(v, false))}</span></span>`;
+}
+
 /* ---------------- Forecast view ---------------- */
 function viewForecast() {
   const start = ym();
@@ -1835,8 +1851,8 @@ function viewForecast() {
     const hp = maxPos ? (r.t.left / maxPos) * (maxPos / posFlex) * 100 : 0;
     const hn = maxNeg ? (-r.t.left / maxNeg) * (maxNeg / negFlex) * 100 : 0;
     return `<button type="button" class="fc-col" data-action="goto-month" data-m="${r.m}" title="${esc(monthLabel(r.m))}: ${esc(money(r.t.left))}">
-      <span class="fc-pos" style="flex:${posFlex}">${r.t.left >= 0 ? `<i style="height:${hp}%"></i>` : ''}</span>
-      ${hasNeg ? `<span class="fc-neg" style="flex:${negFlex}">${r.t.left < 0 ? `<i style="height:${hn}%"></i>` : ''}</span>` : ''}
+      <span class="fc-pos" style="flex:${posFlex}">${r.t.left >= 0 ? `<i style="height:${hp}%"></i>${barValue(r.t.left, `bottom:calc(${hp}% + 3px)`)}` : ''}</span>
+      ${hasNeg ? `<span class="fc-neg" style="flex:${negFlex}">${r.t.left < 0 ? `<i style="height:${hn}%"></i>${barValue(r.t.left, `top:calc(${hn}% + 3px)`)}` : ''}</span>` : ''}
       <span class="fc-label">${esc(monthOnly(r.m))}</span>
     </button>`;
   }).join('');

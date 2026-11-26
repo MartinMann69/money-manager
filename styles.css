@@ -381,6 +381,8 @@ main { max-width: 1240px; margin: 0 auto; padding: 4px 16px 72px; }
   .mgrid { grid-template-columns: repeat(3, minmax(0, 1fr)); grid-template-areas: "c1 c2 c3"; }
   .zone-c3 { display: block; }
 }
+.top-row.future-row { grid-template-columns: minmax(0, 1fr); }
+.free-tile.forecast { opacity: .92; }
 main[data-tab="month"] { max-width: 1760px; }
 
 /* toolbar above the cards */

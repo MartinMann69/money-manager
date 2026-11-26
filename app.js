@@ -491,7 +491,9 @@ const Model = {
       for (let d = 1; d <= todayD; d++) now += daily[d];
       now = r2(now);
     }
-    const res = { m, ev, dayBal, start, known, end: r2(bal), low: low === Infinity ? null : low, lowDay, now, pending, todayD, nextIncome, undated: ev.filter(e => !e.day), budgetLeft: rem };
+    // everyday spending per day (budget money spread out + entered spending), for forecasts
+    const out = daily.map((v, d) => r2((SP.days[d] || 0) - v));
+    const res = { m, ev, dayBal, start, known, end: r2(bal), low: low === Infinity ? null : low, lowDay, now, pending, todayD, nextIncome, undated: ev.filter(e => !e.day), budgetLeft: rem, out };
     cache.set(key, res);
     return res;
   },
@@ -604,6 +606,15 @@ const Model = {
     const paydayKnown = !!(P && P.isCurrent);
     const until = paydayKnown ? P.to : `${cur}-${pad(daysInMonth(cur))}`;
     const bills = this.billsStillToPay(until);
+    // spending you already entered that only leaves the account later (bought now, paid next month)
+    for (let m = cur; m <= until.slice(0, 7); m = addMonths(m, 1)) {
+      for (const tx of this.idx().byMonth.get(m) || []) {
+        if (tx.kind === 'income') continue;
+        const date = tx.date.slice(0, 7) === m ? tx.date : `${m}-01`;
+        if (date > t0 && date <= until) bills.push({ name: /later|next month/i.test(tx.name || '') ? tx.name : `${tx.name || 'Spending'} (paid later)`, amount: tx.amount, date, m, day: +date.slice(8) });
+      }
+    }
+    bills.sort((a, b) => ((a.date || '') < (b.date || '') ? -1 : 1));
     const billTotal = r2(bills.reduce((s, b) => s + b.amount, 0));
     // planned purchases in that period
     const wishes = [];
@@ -633,6 +644,56 @@ const Model = {
     const [y, mo, d] = until.split('-').map(Number);
     const days = Math.max(1, Math.round((new Date(y, mo - 1, d) - new Date(new Date().getFullYear(), new Date().getMonth(), todayD)) / 864e5) + 1);
     return { free, now: T.now, bills, billTotal, wishes, wishTotal, budgets, cushion, until, paydayKnown, nextPay: paydayKnown ? P.nextPay : null, days, perDay: free > 0 ? r2(free / days) : 0 };
+  },
+
+  /** free to spend in the pay period that belongs to a later month m — a forecast from what's planned.
+      { current: true } when that period is the one you're in now (use freeToSpend then) */
+  freeForecast(m) {
+    const cur = ym(), t0 = today();
+    if (m <= cur) return null;
+    const P = this.payCycle(m);
+    const from = P ? P.from : `${m}-01`, to = P ? P.to : `${m}-${pad(daysInMonth(m))}`;
+    if (from <= t0) return { current: true };
+    const Tf = this.timeline(from.slice(0, 7));
+    if (!Tf.known) return null;
+    // what should be on the account the evening before the period starts (this period's leftovers included)
+    const start = from.slice(8) === '01' ? Tf.start : Tf.dayBal[+from.slice(8) - 1];
+    const income = [], bills = [], wishes = [];
+    const byDate = new Map(); // date → { in, out }
+    const at = d => byDate.get(d) || byDate.set(d, { in: 0, out: 0 }).get(d);
+    let budgets = 0;
+    for (let mm = from.slice(0, 7); mm <= to.slice(0, 7); mm = addMonths(mm, 1)) {
+      const T = this.timeline(mm);
+      for (const e of T.ev) {
+        const date = `${mm}-${pad(e.eff)}`;
+        if (date < from || date > to) continue;
+        const row = { name: e.name, amount: Math.abs(e.amount), date, day: e.day, kind: e.kind };
+        if (e.amount > 0) { income.push(row); at(date).in += row.amount; }
+        else { (e.kind === 'wish' ? wishes : bills).push(row); at(date).out += row.amount; }
+      }
+      for (let d = 1; d <= daysInMonth(mm); d++) {
+        const date = `${mm}-${pad(d)}`;
+        if (date < from || date > to || !T.out[d]) continue;
+        budgets += T.out[d]; at(date).out += T.out[d];
+      }
+    }
+    // walk through the period day by day to find the tightest point
+    let run = start, low = Infinity, lowDate = null;
+    for (let date = from; date <= to; date = addDays(date, 1)) {
+      const x = byDate.get(date);
+      if (x) run = run + x.in - x.out;
+      if (run < low - 0.005) { low = run; lowDate = date; }
+    }
+    const sum = rows => r2(rows.reduce((s, r) => s + r.amount, 0));
+    const cushion = r2(Store.data.settings.cushion || 0);
+    const free = r2(run - cushion);
+    const days = daysBetween(from, to) + 1;
+    return {
+      m, from, to, nextPay: P ? P.nextPay : null, paydayKnown: !!P, start: r2(start),
+      income, incomeTotal: sum(income), bills, billTotal: sum(bills), wishes, wishTotal: sum(wishes), budgets: r2(budgets),
+      cushion, free, days, perDay: free > 0 ? r2(free / days) : 0,
+      low: r2(low), lowDate, tight: low < run - 0.5 && lowDate < to ? r2(low - cushion) : null,
+    };
   },
 
   /* ---- money left over from earlier months ---- */
@@ -898,6 +959,45 @@ function freeModal() {
     ${billRows ? `<h4 class="mini-head">Bills still to come</h4><div class="list">${billRows}</div>` : ''}
     ${!F.paydayKnown ? '<p class="hint">Tip: set the day your salary comes in to calculate this until payday instead of the end of the month.</p>' : ''}`;
   openModal('Free to spend', body);
+}
+
+/** top of a later month: free to spend in that month's pay period (a forecast) */
+function futureFreeRow(m) {
+  const FF = Model.freeForecast(m);
+  if (!FF) return '';
+  if (FF.current) return Model.freeToSpend() ? `<div class="top-row future-row">${freeTile()}</div>` : '';
+  const period = `${dateLabel(FF.from)} – ${dateLabel(FF.to)}`;
+  return `<div class="top-row future-row"><button type="button" class="free-tile forecast ${FF.free < 0 ? 'bad' : ''}" data-action="free-forecast" data-m="${m}">
+    <span class="pb-label">Free to spend ${FF.paydayKnown ? 'next period' : 'that month'} · ${esc(period)} · forecast</span>
+    <span class="pb-big">${money(FF.free)}</span>
+    <span class="bt-sub">${FF.free > 0 ? `≈ ${money(FF.perDay)} per day for ${FF.days} days · ` : FF.free < 0 ? 'Not enough for everything planned · ' : ''}from ${money(FF.start)} expected before ${FF.paydayKnown ? 'payday' : 'the 1st'}${FF.incomeTotal ? ` + ${money(FF.incomeTotal)} coming in` : ''} — tap for details</span>
+  </button></div>`;
+}
+function freeForecastModal(m) {
+  const FF = Model.freeForecast(m);
+  if (!FF || FF.current) return;
+  const line = (label, v, cls = '') => `<div class="carry-line ${cls}"><span>${label}</span><b>${v}</b></div>`;
+  const rows = list => list.map(b => `<div class="row"><span class="row-main"><span class="name">${esc(b.name)}</span><span class="sub">${b.day ? esc(dateLabel(b.date)) : `${esc(monthLabel(b.date.slice(0, 7)))} · no day set`}</span></span><span class="amt">${money(b.amount)}</span></div>`).join('');
+  const F = Model.freeToSpend();
+  const body = `
+    <p class="muted">A forecast of what you'll be able to spend on anything from ${esc(fullDate(FF.from))} to ${esc(fullDate(FF.to))}${FF.paydayKnown ? ' (payday to payday)' : ''}, after everything that's planned for that time.</p>
+    <div class="carry">
+      ${line(`Expected on your account before ${FF.paydayKnown ? 'payday' : 'the 1st'}`, money(FF.start))}
+      ${line('+ Income in the period', money(FF.incomeTotal), 'muted')}
+      ${line('− Bills, credits & savings', money(FF.billTotal), 'muted')}
+      ${line('− Budget money & other spending (food etc.)', money(FF.budgets), 'muted')}
+      ${FF.wishTotal ? line('− Planned purchases', money(FF.wishTotal), 'muted') : ''}
+      ${FF.cushion ? line('− Cushion you always want to keep', money(FF.cushion), 'muted') : ''}
+      ${line('= Free to spend', `<span class="${FF.free < 0 ? 'neg' : 'pos'}">${money(FF.free)}</span>`, 'need-total')}
+    </div>
+    ${FF.free < 0 ? `<p class="cal-alert bad">${money(-FF.free)} short for that period. Lower a budget, move a planned purchase, or keep more of this period's money.</p>` : `<p class="hint">About ${money(FF.perDay)} per day for ${FF.days} days.</p>`}
+    ${FF.tight !== null ? `<p class="cal-alert">It's tight before money comes in: around ${esc(dateLabel(FF.lowDate))} only ${money(FF.tight)} would be free. Spend the rest after that.</p>` : ''}
+    <p class="hint">"Expected before ${FF.paydayKnown ? 'payday' : 'the 1st'}" counts on you spending only what's planned until then${F && F.free > 0 ? ` — the ${money(F.free)} free to spend now is part of it, so whatever you spend of that comes off here too` : ''}.</p>
+    ${FF.income.length ? `<h4 class="mini-head">Coming in</h4><div class="list">${rows(FF.income)}</div>` : ''}
+    ${FF.bills.length ? `<h4 class="mini-head">Bills, credits & savings</h4><div class="list">${rows(FF.bills)}</div>` : ''}
+    ${FF.wishes.length ? `<h4 class="mini-head">Planned purchases</h4><div class="list">${rows(FF.wishes)}</div>` : ''}
+    ${!FF.paydayKnown ? '<p class="hint">Tip: set the day your salary comes in to see this from payday to payday instead of by calendar month.</p>' : ''}`;
+  openModal(`Free to spend · ${esc(dateLabel(FF.from))} – ${esc(dateLabel(FF.to))}`, body);
 }
 
 function balanceModal() {
@@ -1444,6 +1544,7 @@ function viewMonth() {
       </div>
       ${empty ? welcomeCard() : ''}
       ${S.current && !empty ? `<div class="top-row ${Model.freeToSpend() ? 'has-free' : ''}">${freeTile()}${balanceTile()}${paydayBanner()}</div>` : ''}
+      ${!S.current && !empty && UI.month > ym() ? futureFreeRow(UI.month) : ''}
       ${!empty ? `<div class="dash-tools">
         <button type="button" class="btn small" data-action="sidebar-toggle">☰ Sidebar${L.side.length ? ` <span class="pill-count">${L.side.length}</span>` : ''}</button>
         <span class="spacer"></span>
@@ -2968,6 +3069,7 @@ const actions = {
   'edit-credit': el => { const c = Store.get('credits', el.dataset.id); if (c) creditModal(c); },
   'balance-edit': balanceModal,
   'free-info': freeModal,
+  'free-forecast': el => freeForecastModal(el.dataset.m),
   'sidebar-toggle': () => { UI.side = !UI.side; try { localStorage.setItem('mm-side-open', UI.side ? '1' : '0'); } catch { /* ignore */ } render(); },
   'arrange-toggle': () => { UI.arrange = !UI.arrange; render(); },
   'card-hide': el => { Layout.hide(el.dataset.cid); render(); toast(`${CARD_NAMES[el.dataset.cid]} moved to the sidebar`); },

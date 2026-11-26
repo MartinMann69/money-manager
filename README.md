@@ -60,6 +60,9 @@ your data lives on your devices, and can optionally be synced through your own p
 - **Free to spend** — the big tile at the top of the Month view: what you can spend on anything until your next
   salary and still pay everything: balance now − bills still to come − budget money still planned − planned purchases
   − your cushion ("Always keep at least" on the Goals tab). Shows a per-day amount; tap it for the breakdown.
+  Spending you bought now but pay next month is kept back too. Swipe to a later month to see a **forecast** for that
+  pay period (e.g. "Dec 25 – Jan 24"): what you'll probably have before payday (this period's leftovers included) +
+  income − bills, credits, savings, budget money and planned purchases − cushion.
 - **Current balance** — shown at the top of every screen and on the Month view: an estimate of what's on your
   account today, from everything you entered. Tap it to correct it to what your bank shows; the app adjusts.
   Or choose **Start from this month**: the balance is then counted only from what you enter this month — add what
